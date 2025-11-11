@@ -96,6 +96,52 @@ function App() {
     setTimeRemaining(`${config.duration}:00`);
   };
 
+  const handleQuickWash = (programName: string) => {
+    const programConfigs: Record<string, WashConfiguration> = {
+      'Quick Wash': {
+        program: 'quick',
+        temperature: 40,
+        spinSpeed: 1200,
+        duration: 30,
+        waterLevel: 'medium',
+        extraRinse: false,
+        preWash: false,
+      },
+      'Delicate': {
+        program: 'delicate',
+        temperature: 30,
+        spinSpeed: 800,
+        duration: 60,
+        waterLevel: 'low',
+        extraRinse: false,
+        preWash: false,
+      },
+      'Heavy Duty': {
+        program: 'heavy',
+        temperature: 90,
+        spinSpeed: 1400,
+        duration: 120,
+        waterLevel: 'high',
+        extraRinse: true,
+        preWash: true,
+      },
+      'Eco Mode': {
+        program: 'eco',
+        temperature: 40,
+        spinSpeed: 1000,
+        duration: 150,
+        waterLevel: 'low',
+        extraRinse: false,
+        preWash: false,
+      },
+    };
+
+    const config = programConfigs[programName];
+    if (config) {
+      handleConfigStart(config);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white overflow-hidden">
       {/* Background Effects */}
@@ -156,10 +202,14 @@ function App() {
           onStart={handleStart}
           onStop={handleStop}
           onSettings={handleSettings}
+          onQuickWash={handleQuickWash}
           currentCycle={currentCycle}
           totalCycles={totalCycles}
           timeRemaining={timeRemaining}
         />
+
+        {/* Spacer for fixed control panel */}
+        <div className="h-32" />
       </div>
 
       {/* Configuration Modal */}

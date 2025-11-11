@@ -7,6 +7,7 @@ interface ControlPanelProps {
   onStart: () => void;
   onStop: () => void;
   onSettings: () => void;
+  onQuickWash: (program: string) => void;
   currentCycle?: number;
   totalCycles?: number;
   timeRemaining?: string;
@@ -17,6 +18,7 @@ export default function ControlPanel({
   onStart,
   onStop,
   onSettings,
+  onQuickWash,
   currentCycle = 0,
   totalCycles = 1,
   timeRemaining = '0:00'
@@ -85,9 +87,8 @@ export default function ControlPanel({
             </motion.button>
 
             <motion.button
-              whileHover={{ scale: 1.05 }}
+              whileHover={{ scale: 1.05, boxShadow: '0 0 30px rgba(34, 197, 94, 0.5)' }}
               whileTap={{ scale: 0.95 }}
-              whileHover={{ boxShadow: '0 0 30px rgba(34, 197, 94, 0.5)' }}
               onClick={isActive ? onStop : onStart}
               className={`px-8 py-4 rounded-xl font-semibold text-white transition-all duration-300 flex items-center space-x-3 ${
                 isActive
@@ -110,29 +111,61 @@ export default function ControlPanel({
           </div>
         </div>
 
-        {/* Quick Actions */}
-        {isHovered && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-4 pt-4 border-t border-gray-700/30"
-          >
-            <div className="flex justify-center space-x-4">
-              <button className="px-4 py-2 bg-gray-800/50 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800/70 transition-all duration-200">
-                Quick Wash
-              </button>
-              <button className="px-4 py-2 bg-gray-800/50 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800/70 transition-all duration-200">
-                Delicate
-              </button>
-              <button className="px-4 py-2 bg-gray-800/50 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800/70 transition-all duration-200">
-                Heavy Duty
-              </button>
-              <button className="px-4 py-2 bg-gray-800/50 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800/70 transition-all duration-200">
-                Eco Mode
-              </button>
+        {/* Quick Actions with Smooth Animation */}
+        <motion.div
+          initial={{ height: 0, opacity: 0 }}
+          animate={{
+            height: isHovered ? "auto" : 0,
+            opacity: isHovered ? 1 : 0,
+            marginBottom: isHovered ? 0 : -20
+          }}
+          transition={{
+            height: { duration: 0.3, ease: "easeInOut" },
+            opacity: { duration: 0.2, delay: isHovered ? 0.1 : 0 },
+            marginBottom: { duration: 0.3 }
+          }}
+          className="overflow-hidden"
+        >
+          <div className="pt-4 border-t border-gray-700/30">
+            <div className="flex justify-center space-x-3">
+              {[
+                { name: 'Quick Wash', icon: '⚡', color: 'blue' },
+                { name: 'Delicate', icon: '🌸', color: 'pink' },
+                { name: 'Heavy Duty', icon: '🛡️', color: 'orange' },
+                { name: 'Eco Mode', icon: '🌱', color: 'green' }
+              ].map((program, index) => (
+                <motion.button
+                  key={program.name}
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{
+                    scale: isHovered ? 1 : 0.8,
+                    opacity: isHovered ? 1 : 0
+                  }}
+                  transition={{
+                    scale: { duration: 0.2, delay: isHovered ? index * 0.05 : 0 },
+                    opacity: { duration: 0.2, delay: isHovered ? index * 0.05 : 0 }
+                  }}
+                  onClick={() => onQuickWash(program.name)}
+                  whileHover={{ scale: 1.05, y: -2 }}
+                  whileTap={{ scale: 0.95 }}
+                  className={`px-4 py-3 bg-gray-800/50 rounded-xl text-sm font-medium transition-all duration-200 backdrop-blur-sm border border-gray-700/50 hover:border-gray-600/50 group
+                    ${program.color === 'blue' ? 'hover:bg-blue-500/20 hover:border-blue-500/30' : ''}
+                    ${program.color === 'pink' ? 'hover:bg-pink-500/20 hover:border-pink-500/30' : ''}
+                    ${program.color === 'orange' ? 'hover:bg-orange-500/20 hover:border-orange-500/30' : ''}
+                    ${program.color === 'green' ? 'hover:bg-green-500/20 hover:border-green-500/30' : ''}
+                  `}
+                >
+                  <span className="flex items-center space-x-2">
+                    <span className="text-lg">{program.icon}</span>
+                    <span className="text-gray-400 group-hover:text-white transition-colors">
+                      {program.name}
+                    </span>
+                  </span>
+                </motion.button>
+              ))}
             </div>
-          </motion.div>
-        )}
+          </div>
+        </motion.div>
       </div>
     </motion.div>
   );
