@@ -4,6 +4,7 @@ import WashingMachine3D from "./components/WashingMachine3D";
 import StatsDisplay from "./components/StatsDisplay";
 import ControlPanel from "./components/ControlPanel";
 import WashConfig from "./components/WashConfig";
+import GeminiLive from "./components/GeminiLive";
 import "./App.css";
 
 interface WashConfiguration {
@@ -26,6 +27,7 @@ interface PartStats {
 function App() {
   const [isActive, setIsActive] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [isGeminiLiveActive, setIsGeminiLiveActive] = useState(false);
   const [currentCycle, setCurrentCycle] = useState(0);
   const [totalCycles, setTotalCycles] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState('0:00');
@@ -169,7 +171,27 @@ function App() {
               </div>
             </div>
 
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-6">
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setIsGeminiLiveActive(!isGeminiLiveActive)}
+                className={`flex items-center space-x-3 px-4 py-2 rounded-xl border transition-all duration-200 ${
+                  isGeminiLiveActive
+                    ? 'bg-blue-500/20 border-blue-500/30'
+                    : 'bg-gray-800/50 border-gray-700/50 hover:border-gray-600/50'
+                }`}
+              >
+                <div className={`w-2 h-2 rounded-full ${
+                  isGeminiLiveActive ? 'bg-blue-400 animate-pulse' : 'bg-gray-400'
+                }`} />
+                <span className={`text-sm font-medium ${
+                  isGeminiLiveActive ? 'text-blue-400' : 'text-gray-400'
+                }`}>
+                  Gemini Live
+                </span>
+              </motion.button>
+
               <div className="text-right">
                 <p className="text-gray-400 text-sm">System Status</p>
                 <p className="text-green-400 font-medium">Optimal</p>
@@ -218,6 +240,20 @@ function App() {
         onClose={() => setIsConfigOpen(false)}
         onStart={handleConfigStart}
       />
+
+      {/* Gemini Live Assistant */}
+      {isGeminiLiveActive && (
+        <GeminiLive
+          parts={parts}
+          overallHealth={overallHealth}
+          totalCycles={totalCyclesRemaining}
+          onStartWash={handleConfigStart}
+          isActive={isActive}
+          currentCycle={currentCycle}
+          totalCyclesScheduled={totalCycles}
+          timeRemaining={timeRemaining}
+        />
+      )}
     </div>
   );
 }

@@ -34,6 +34,34 @@ export default function WashConfig({ isOpen, onClose, onStart }: WashConfigProps
   const [extraRinse, setExtraRinse] = useState(false);
   const [preWash, setPreWash] = useState(false);
 
+  const getTemperatureColor = (temp: number) => {
+    if (temp <= 30) return 'from-blue-400 to-cyan-400';
+    if (temp <= 40) return 'from-blue-400 to-blue-500';
+    if (temp <= 50) return 'from-cyan-400 to-green-400';
+    if (temp <= 60) return 'from-green-400 to-yellow-400';
+    if (temp <= 70) return 'from-yellow-400 to-orange-400';
+    if (temp <= 80) return 'from-orange-400 to-red-400';
+    return 'from-red-400 to-red-600';
+  };
+
+  const getTemperatureHex = (temp: number) => {
+    if (temp <= 30) return '#60a5fa';
+    if (temp <= 40) return '#3b82f6';
+    if (temp <= 50) return '#14b8a6';
+    if (temp <= 60) return '#84cc16';
+    if (temp <= 70) return '#f59e0b';
+    if (temp <= 80) return '#f97316';
+    return '#ef4444';
+  };
+
+  const getWaterLevelHeight = (level: 'low' | 'medium' | 'high') => {
+    switch (level) {
+      case 'low': return '20%';
+      case 'medium': return '50%';
+      case 'high': return '80%';
+    }
+  };
+
   const handleStart = () => {
     const config: WashConfiguration = {
       program: selectedProgram.id,
@@ -120,23 +148,38 @@ export default function WashConfig({ isOpen, onClose, onStart }: WashConfigProps
                 </h4>
                 <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700/50">
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-3xl font-bold text-white">{temperature}°C</span>
+                    <span className={`text-3xl font-bold bg-gradient-to-r ${getTemperatureColor(temperature)} bg-clip-text text-transparent`}>
+                      {temperature}°C
+                    </span>
                     <span className="text-gray-400 text-sm">
                       {temperature < 40 ? 'Cold' : temperature < 60 ? 'Warm' : 'Hot'}
                     </span>
                   </div>
-                  <input
-                    type="range"
-                    min="20"
-                    max="90"
-                    step="10"
-                    value={temperature}
-                    onChange={(e) => setTemperature(Number(e.target.value))}
-                    className="w-full h-2 bg-gray-700/50 rounded-lg appearance-none cursor-pointer slider"
-                  />
+                  <div className="relative">
+                    <input
+                      type="range"
+                      min="20"
+                      max="90"
+                      step="10"
+                      value={temperature}
+                      onChange={(e) => setTemperature(Number(e.target.value))}
+                      className="w-full h-2 bg-gray-700/50 rounded-lg appearance-none cursor-pointer"
+                      style={{
+                        background: `linear-gradient(to right, ${getTemperatureHex(20)} 0%, ${getTemperatureHex(90)} 100%)`,
+                      }}
+                    />
+                    <div
+                      className="absolute top-1/2 transform -translate-y-1/2 w-5 h-5 bg-white border-2 shadow-lg rounded-full pointer-events-none transition-all duration-200"
+                      style={{
+                        left: `calc(${((temperature - 20) / 70) * 100}% - 10px)`,
+                        borderColor: getTemperatureHex(temperature),
+                        boxShadow: `0 0 10px ${getTemperatureHex(temperature)}50`,
+                      }}
+                    />
+                  </div>
                   <div className="flex justify-between text-xs text-gray-400 mt-2">
-                    <span>20°C</span>
-                    <span>90°C</span>
+                    <span style={{ color: getTemperatureHex(20) }}>20°C</span>
+                    <span style={{ color: getTemperatureHex(90) }}>90°C</span>
                   </div>
                 </div>
               </div>
@@ -181,13 +224,28 @@ export default function WashConfig({ isOpen, onClose, onStart }: WashConfigProps
                     <button
                       key={level}
                       onClick={() => setWaterLevel(level)}
-                      className={`py-3 px-4 rounded-xl border-2 font-medium transition-all duration-200 capitalize ${
+                      className={`relative py-6 px-4 rounded-xl border-2 font-medium transition-all duration-200 capitalize overflow-hidden ${
                         waterLevel === level
                           ? 'border-blue-500 bg-blue-500/10 text-white'
                           : 'border-gray-700/50 text-gray-400 hover:border-gray-600/50'
                       }`}
                     >
-                      {level}
+                      <div className="relative z-10">{level}</div>
+                      {/* Water visualization */}
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-blue-500/30 to-cyan-400/20 transition-all duration-300"
+                        style={{
+                          height: getWaterLevelHeight(level),
+                        }}
+                      />
+                      {/* Wave effect */}
+                      {waterLevel === level && (
+                        <div className="absolute bottom-0 left-0 right-0 h-2 bg-blue-400/40 animate-pulse"
+                          style={{
+                            height: getWaterLevelHeight(level),
+                            marginTop: `-${getWaterLevelHeight(level)}`,
+                          }}
+                        />
+                      )}
                     </button>
                   ))}
                 </div>
