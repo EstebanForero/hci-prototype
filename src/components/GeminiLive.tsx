@@ -80,6 +80,12 @@ export default function GeminiLive({
   // Initialize Gemini Live WebSocket connection
   const initGeminiLive = useCallback(async () => {
     try {
+      // Prevent duplicate initializations
+      if (websocketRef.current?.readyState === WebSocket.OPEN) {
+        console.log('🔄 WebSocket already connected, skipping initialization');
+        return;
+      }
+
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
       if (!apiKey || apiKey === 'your_gemini_api_key_here') {
@@ -101,10 +107,18 @@ export default function GeminiLive({
       // Generate session ID
       sessionIdRef.current = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+      // Close any existing WebSocket before creating a new one
+      if (websocketRef.current) {
+        console.log('🔄 Closing existing WebSocket before creating new connection...');
+        websocketRef.current.close();
+        websocketRef.current = null;
+      }
+
       // Connect to Gemini Live API WebSocket
       // Using the correct endpoint format for Gemini Live API
       const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${apiKey}`;
 
+      console.log('🔌 Creating new WebSocket connection...');
       websocketRef.current = new WebSocket(wsUrl);
 
       websocketRef.current.onopen = () => {
@@ -217,6 +231,12 @@ export default function GeminiLive({
 
   // Schedule reconnection
   const scheduleReconnect = useCallback(() => {
+    // Don't reconnect if we already have an active connection
+    if (websocketRef.current?.readyState === WebSocket.OPEN) {
+      console.log('🔄 Already connected, skipping reconnection');
+      return;
+    }
+
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
     }
