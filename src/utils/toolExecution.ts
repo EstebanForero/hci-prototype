@@ -58,6 +58,7 @@ export class ToolExecutionManager {
    * Execute a tool call
    */
   public async executeToolCall(toolCall: ToolCall): Promise<ToolResponse> {
+    const startTime = performance.now();
     const functionName = toolCall.name || toolCall.function?.name || 'unknown';
     const args = toolCall.args || toolCall.function?.args || {};
     const callId = toolCall.id || toolCall.function?.id || 'unknown';
@@ -122,12 +123,16 @@ export class ToolExecutionManager {
         response: result
       };
 
+      const endTime = performance.now();
+      console.log(`⏱️ Tool ${functionName} completed in ${(endTime - startTime).toFixed(2)}ms`);
+
       this.callbacks.onToolExecuted?.(functionName, result);
       return response;
 
     } catch (error) {
+      const endTime = performance.now();
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error(`❌ Error executing function ${functionName}:`, error);
+      console.error(`❌ Error executing function ${functionName} after ${(endTime - startTime).toFixed(2)}ms:`, error);
 
       const errorResponse: ToolResponse = {
         id: callId || 'unknown',
@@ -228,7 +233,10 @@ export class ToolExecutionManager {
     };
 
     console.log('📞 Calling onStartWash callback with config:', washConfig);
+    const callbackStart = performance.now();
     this.callbacks.onStartWash(washConfig);
+    const callbackEnd = performance.now();
+    console.log(`⏱️ onStartWash callback completed in ${(callbackEnd - callbackStart).toFixed(2)}ms`);
 
     const responseMessage = recommendations.length > 0
       ? `Perfect! I've started your wash with smart settings: ${recommendations.join(', ')}.${extra_rinse ? ' Added extra rinse.' : ''}${pre_soak ? ' Added pre-soak.' : ''}`

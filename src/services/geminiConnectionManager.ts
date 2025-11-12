@@ -210,6 +210,7 @@ export class GeminiConnectionManager {
       const combinedText = content.textParts.join(' ');
       if (combinedText.trim()) {
         console.log('💬 Received text response:', combinedText.substring(0, 100) + '...');
+        console.log('🎯 This appears to be Gemini responding to tool result');
         this.callbacks.onMessage({ text: combinedText, type: 'assistant' });
       }
     }
@@ -426,6 +427,7 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
     try {
       console.log('🔧 Sending tool responses:', JSON.stringify(toolResponseMessage, null, 2));
       this.wsManager.websocket.send(JSON.stringify(toolResponseMessage));
+      console.log('✅ Tool response sent, waiting for Gemini to process and respond...');
       return true;
     } catch (error) {
       console.error('Error sending tool response:', error);
@@ -437,11 +439,24 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
    * Play audio chunk with proper buffering (fixed version)
    */
   playAudioChunk(base64Audio: string, isFirstChunk: boolean = false, volume: number = 0.8): void {
-    // Add to buffer instead of playing immediately
+    // Calculate estimated duration
+    const estimatedSamples = Math.floor((base64Audio.length * 3) / 4) / 2; // Rough estimate
+    const estimatedDuration = estimatedSamples / 24000; // 24kHz sample rate
+
+    console.log(`🎵 Buffering audio chunk: ${estimatedDuration.toFixed(3)}s (${base64Audio.length} chars)`);
+
+    // Add to buffer
     this.audioBuffer.push(base64Audio);
 
-    // Start playing sequence if this is the first chunk and we're not already playing
-    if (isFirstChunk && !this.isPlayingSequence) {
+    // Calculate total buffered duration
+    const totalBufferedDuration = this.audioBuffer.reduce((total, chunk) => {
+      const chunkSamples = Math.floor((chunk.length * 3) / 4) / 2;
+      return total + (chunkSamples / 24000);
+    }, 0);
+
+    // Start playing if we have enough buffer (0.3s) or if this is the first chunk
+    if (!this.isPlayingSequence && (totalBufferedDuration >= 0.3 || isFirstChunk)) {
+      console.log(`▶️ Starting playback with ${totalBufferedDuration.toFixed(3)}s buffered`);
       this.isPlayingSequence = true;
       this.nextPlayTime = null; // Reset timing
       this.playNextBufferedChunk(volume);
