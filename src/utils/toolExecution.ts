@@ -4,7 +4,6 @@
  */
 
 import {
-  ComponentMetrics,
   ToolCall,
   ToolResponse,
   StartWashParams,
@@ -12,7 +11,6 @@ import {
   GetWashStatusParams,
   GetCurrentCyclesParams,
   GetComponentStatesParams,
-  GetConsumptionParams,
   WashStatusResponse,
   CurrentCyclesResponse,
   ComponentStatesResponse,
@@ -35,7 +33,7 @@ export interface SystemContext {
   currentCycle: number;
   totalCyclesScheduled: number;
   timeRemaining: string;
-  parts: ComponentMetrics[];
+  parts: any[];
 }
 
 export class ToolExecutionManager {
@@ -345,7 +343,7 @@ export class ToolExecutionManager {
     const { program, temperature, spin_speed, duration, water_level, extra_rinse, pre_wash } = params;
 
     // Calculate resource usage based on parameters (same logic as in App.tsx)
-    const baseElectricity = {
+    const baseElectricity: Record<string, number> = {
       'Quick Wash': 0.5,
       'Daily': 0.8,
       'Heavy': 2.0,
@@ -365,7 +363,7 @@ export class ToolExecutionManager {
     const baseKw = baseElectricity[programName] || 0.8;
     const electricityKw = Math.round((baseKw * tempMultiplier * spinMultiplier + extraCosts) * 10) / 10;
 
-    const baseWater = {
+    const baseWater: Record<string, number> = {
       'Quick Wash': 25,
       'Daily': 45,
       'Heavy': 80,
@@ -378,7 +376,7 @@ export class ToolExecutionManager {
     };
 
     const baseLiters = baseWater[programName] || 45;
-    const waterLevelMultiplier = {
+    const waterLevelMultiplier: Record<string, number> = {
       'low': 0.7,
       'medium': 1.0,
       'high': 1.3

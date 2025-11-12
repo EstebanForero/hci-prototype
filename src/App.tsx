@@ -140,7 +140,6 @@ function App() {
   const [timeRemaining, setTimeRemaining] = useState('0:00');
   const [washConfig, setWashConfig] = useState<WashConfiguration | null>(null);
   const [currentUsage, setCurrentUsage] = useState({ electricityKw: 0, waterLiters: 0 });
-  const [totalUsage, setTotalUsage] = useState({ electricityKw: 0, waterLiters: 0 });
 
   const [parts, setParts] = useState<PartStats[]>([
     { name: "Motor", health: 85, status: 'optimal', cyclesRemaining: 450 },
@@ -160,7 +159,7 @@ function App() {
   // Calculate resource usage based on wash configuration
   const calculateResourceUsage = (config: WashConfiguration) => {
     // Base electricity consumption (kW) by temperature and program
-    const baseElectricity = {
+    const baseElectricity: Record<string, number> = {
       'Quick Wash': 0.5,
       'Daily': 0.8,
       'Heavy': 2.0,
@@ -186,7 +185,7 @@ function App() {
     const electricityKw = baseKw * tempMultiplier * spinMultiplier + extraCosts;
 
     // Water usage calculation (liters)
-    const baseWater = {
+    const baseWater: Record<string, number> = {
       'Quick Wash': 25,
       'Daily': 45,
       'Heavy': 80,
@@ -304,7 +303,6 @@ function App() {
     // Calculate resource usage
     const usage = calculateResourceUsage(config);
     setCurrentUsage(usage);
-    setTotalUsage(usage);
 
     setIsActive(true);
     setCurrentCycle(1);

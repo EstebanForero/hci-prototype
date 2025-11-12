@@ -8,13 +8,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Play,
   Pause,
-  Settings,
   Activity,
-  TrendingUp,
-  Clock,
-  Zap,
-  Droplets,
-  AlertCircle
+  TrendingUp
 } from 'lucide-react';
 
 interface SidebarLayoutProps {

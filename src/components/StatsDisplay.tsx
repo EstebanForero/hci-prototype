@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { Battery, Zap, Droplets, Clock, Activity, Shield } from 'lucide-react';
+import { Battery, Clock, Activity, Shield } from 'lucide-react';
 
 interface PartStats {
   name: string;
