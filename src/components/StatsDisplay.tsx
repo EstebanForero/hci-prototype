@@ -13,6 +13,7 @@ interface StatsDisplayProps {
   overallHealth: number;
   totalCycles: number;
   isActive: boolean;
+  onPartClick?: (part: PartStats) => void;
 }
 
 const getStatusColor = (status: string) => {
@@ -34,7 +35,7 @@ const getHealthBarColor = (health: number) => {
   return 'bg-red-500';
 };
 
-export default function StatsDisplay({ parts, overallHealth, totalCycles, isActive }: StatsDisplayProps) {
+export default function StatsDisplay({ parts, overallHealth, totalCycles, isActive, onPartClick }: StatsDisplayProps) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-6">
       {/* Overall Stats */}
@@ -85,7 +86,10 @@ export default function StatsDisplay({ parts, overallHealth, totalCycles, isActi
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: index * 0.1 }}
-          className="bg-gray-800/50 backdrop-blur-sm rounded-xl p-4 border border-gray-700/50 hover:border-gray-600/50 transition-all duration-300"
+          className="bg-gray-800/50 backdrop-blur-sm rounded-xl p-4 border border-gray-700/50 hover:border-gray-600/50 transition-all duration-300 cursor-pointer"
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={() => onPartClick?.(part)}
         >
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-white font-semibold">{part.name}</h3>
