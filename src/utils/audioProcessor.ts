@@ -98,8 +98,8 @@ export class AudioProcessor {
       return false;
     }
 
-    // Check if it looks like base64 (reasonable length and valid characters)
-    if (base64Audio.length < 100) {
+    // Check if it looks like base64 (more lenient for real-time chunks)
+    if (base64Audio.length < 20) {
       return false;
     }
 

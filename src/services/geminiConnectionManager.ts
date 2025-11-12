@@ -439,27 +439,90 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
    * Play audio chunk with proper buffering (fixed version)
    */
   playAudioChunk(base64Audio: string, isFirstChunk: boolean = false, volume: number = 0.8): void {
-    // Calculate estimated duration
-    const estimatedSamples = Math.floor((base64Audio.length * 3) / 4) / 2; // Rough estimate
-    const estimatedDuration = estimatedSamples / 24000; // 24kHz sample rate
-
-    console.log(`🎵 Buffering audio chunk: ${estimatedDuration.toFixed(3)}s (${base64Audio.length} chars)`);
-
-    // Add to buffer
+    // Add to buffer for smooth playback
     this.audioBuffer.push(base64Audio);
 
-    // Calculate total buffered duration
-    const totalBufferedDuration = this.audioBuffer.reduce((total, chunk) => {
-      const chunkSamples = Math.floor((chunk.length * 3) / 4) / 2;
-      return total + (chunkSamples / 24000);
-    }, 0);
-
-    // Start playing if we have enough buffer (0.3s) or if this is the first chunk
-    if (!this.isPlayingSequence && (totalBufferedDuration >= 0.3 || isFirstChunk)) {
-      console.log(`▶️ Starting playback with ${totalBufferedDuration.toFixed(3)}s buffered`);
+    // Start playing sequence if this is the first chunk and we're not already playing
+    if (isFirstChunk && !this.isPlayingSequence) {
       this.isPlayingSequence = true;
       this.nextPlayTime = null; // Reset timing
       this.playNextBufferedChunk(volume);
+    }
+  }
+
+  /**
+   * Play combined audio like test.ts - combine ALL chunks then play once
+   */
+  private playCombinedAudio(volume: number): void {
+    if (this.audioBuffer.length === 0) {
+      console.log('❌ No audio chunks to combine');
+      return;
+    }
+
+    console.log(`🎵 Combining ${this.audioBuffer.length} chunks into one audio buffer...`);
+
+    try {
+      // Convert each chunk to PCM and store (like test.ts lines 99-113)
+      const allPcmData: Int16Array[] = [];
+      let totalSamples = 0;
+
+      for (let i = 0; i < this.audioBuffer.length; i++) {
+        const chunk = this.audioBuffer[i];
+        const binaryString = atob(chunk);
+        const bytes = new Uint8Array(binaryString.length);
+
+        for (let j = 0; j < binaryString.length; j++) {
+          bytes[j] = binaryString.charCodeAt(j);
+        }
+
+        const pcmData = new Int16Array(bytes.buffer.slice(0, bytes.length));
+        allPcmData.push(pcmData);
+        totalSamples += pcmData.length;
+
+        console.log(`🎵 Chunk ${i + 1}: ${pcmData.length} samples, total so far: ${totalSamples}`);
+      }
+
+      // Combine all PCM data into one buffer (like test.ts lines 116-121)
+      const combinedPcmData = new Int16Array(totalSamples);
+      let offset = 0;
+      for (const pcmData of allPcmData) {
+        combinedPcmData.set(pcmData, offset);
+        offset += pcmData.length;
+      }
+
+      console.log(`✅ Combined ${totalSamples} samples (${(totalSamples / 24000).toFixed(2)}s total)`);
+
+      // Create and play the combined audio buffer
+      const audioBuffer = this.audioContext!.createBuffer(1, combinedPcmData.length, 24000);
+      const channelData = audioBuffer.getChannelData(0);
+
+      // Convert Int16 to Float32 for Web Audio API
+      for (let i = 0; i < combinedPcmData.length; i++) {
+        channelData[i] = combinedPcmData[i] / 32768.0;
+      }
+
+      // Play the complete audio
+      const source = this.audioContext!.createBufferSource();
+      source.buffer = audioBuffer;
+
+      const gainNode = this.audioContext!.createGain();
+      gainNode.gain.value = volume;
+
+      source.connect(gainNode);
+      gainNode.connect(this.audioContext!.destination);
+
+      source.onended = () => {
+        console.log('✅ Combined audio playback completed');
+        this.isPlayingSequence = false;
+        this.audioBuffer = []; // Clear buffer after playing
+      };
+
+      source.start(0);
+      console.log('🔊 Playing combined audio buffer...');
+
+    } catch (error) {
+      console.error('❌ Error playing combined audio:', error);
+      this.isPlayingSequence = false;
     }
   }
 
