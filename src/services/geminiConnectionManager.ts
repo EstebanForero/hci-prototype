@@ -442,8 +442,15 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
     // Add to buffer for smooth playback
     this.audioBuffer.push(base64Audio);
 
-    // Start playing sequence if this is the first chunk and we're not already playing
-    if (isFirstChunk && !this.isPlayingSequence) {
+    // Calculate total buffered duration
+    const totalBufferedDuration = this.audioBuffer.reduce((total, chunk) => {
+      const estimatedSamples = Math.floor((chunk.length * 3) / 4) / 2; // Rough estimate
+      return total + (estimatedSamples / 24000);
+    }, 0);
+
+    // Start playing sequence if this is the first chunk OR if we have enough buffer
+    if (!this.isPlayingSequence && (isFirstChunk || totalBufferedDuration >= 0.2)) {
+      console.log(`▶️ Starting playback with ${totalBufferedDuration.toFixed(3)}s buffered`);
       this.isPlayingSequence = true;
       this.nextPlayTime = null; // Reset timing
       this.playNextBufferedChunk(volume);
@@ -588,18 +595,16 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
       const currentTime = this.audioContext.currentTime;
 
       // Schedule this chunk to play at the correct time
-      const playTime = this.nextPlayTime !== null ? this.nextPlayTime : currentTime + 0.01;
+      const playTime = this.nextPlayTime !== null ? this.nextPlayTime : currentTime;
       source.start(playTime);
 
-      // Calculate when the next chunk should play (with tiny gap to prevent overlap)
-      this.nextPlayTime = playTime + chunkDuration + 0.001; // 1ms gap between chunks
+      // Calculate when the next chunk should play (no gap for seamless playback)
+      this.nextPlayTime = playTime + chunkDuration; // No gap between chunks
 
-      // Schedule the next chunk
+      // Schedule the next chunk immediately
       source.onended = () => {
         if (this.audioBuffer.length > 0) {
-          setTimeout(() => {
-            this.playNextBufferedChunk(volume);
-          }, 5); // Very small delay
+          this.playNextBufferedChunk(volume); // Play immediately when current chunk ends
         } else {
           // No more chunks
           this.isPlayingSequence = false;
