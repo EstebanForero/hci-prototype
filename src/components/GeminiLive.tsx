@@ -2,23 +2,16 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Mic, MicOff, Bot, Volume2, VolumeX, Settings, Activity, AlertCircle } from 'lucide-react';
 
-interface ComponentMetrics {
-  name: string;
-  health: number;
-  status: 'optimal' | 'warning' | 'critical';
-  cyclesRemaining: number;
-}
+// Import refactored types and utilities
+import {
+  ComponentMetrics,
+  GeminiLiveProps,
+  ChatMessage,
+  AudioStreamRef
+} from '../types/gemini';
 
-interface GeminiLiveProps {
-  parts: ComponentMetrics[];
-  overallHealth: number;
-  totalCycles: number;
-  onStartWash: (config: any) => void;
-  isActive: boolean;
-  currentCycle: number;
-  totalCyclesScheduled: number;
-  timeRemaining: string;
-}
+// Import refactored audio utilities
+import { playTestTone, createTestPCMData } from '../utils/audioUtils';
 
 interface GeminiResponse {
   text: string;
@@ -44,7 +37,7 @@ export default function GeminiLive({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSDKReady, setIsSDKReady] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [responses, setResponses] = useState<Array<{text: string, timestamp: Date, type: 'user' | 'assistant'}>>([]);
+  const [responses, setResponses] = useState<ChatMessage[]>([]);
   const [volume, setVolume] = useState(0.8);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
@@ -53,9 +46,6 @@ export default function GeminiLive({
   const [textInput, setTextInput] = useState('');
   const [useTextInput, setUseTextInput] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
-  const [isAudioTesting, setIsAudioTesting] = useState(false);
-  const [testResults, setTestResults] = useState<string[]>([]);
-  const [debugLogsEnabled, setDebugLogsEnabled] = useState(false);
 
   // Gemini Live WebSocket and audio refs
   const websocketRef = useRef<WebSocket | null>(null);
@@ -457,14 +447,13 @@ Always respond conversationally and briefly. Do not send any test messages or gr
     // Handle setup completion
     if (data.setup_complete || data.setupComplete) {
       console.log('✅ Setup complete');
-      setTestResults(prev => [...prev, '✅ Gemini setup complete']);
       return;
     }
 
     // Check for any error responses
     if (data.error) {
       console.error('❌ Gemini returned error:', data.error);
-      setTestResults(prev => [...prev, `❌ Gemini error: ${data.error.message || data.error}`]);
+      setError(`Gemini error: ${data.error.message || data.error}`);
       return;
     }
 
@@ -484,22 +473,16 @@ Always respond conversationally and briefly. Do not send any test messages or gr
         // Check for text content
         if (obj.text && typeof obj.text === 'string' && obj.text.trim()) {
           textParts.push(obj.text);
-          if (debugLogsEnabled) {
-            console.log(`💬 Found text at ${path}: ${obj.text.substring(0, 50)}...`);
-          }
+          console.log(`💬 Found text at ${path}: ${obj.text.substring(0, 50)}...`);
         }
 
         // Check for tool calls (both possible structures)
         if (obj.functionCalls && Array.isArray(obj.functionCalls)) {
           toolCalls.push(...obj.functionCalls);
-          if (debugLogsEnabled) {
-            console.log(`🔧 Found ${obj.functionCalls.length} tool calls at ${path}`);
-          }
+          console.log(`🔧 Found ${obj.functionCalls.length} tool calls at ${path}`);
         } else if (obj.function_calls && Array.isArray(obj.function_calls)) {
           toolCalls.push(...obj.function_calls);
-          if (debugLogsEnabled) {
-            console.log(`🔧 Found ${obj.function_calls.length} tool calls at ${path}`);
-          }
+          console.log(`🔧 Found ${obj.function_calls.length} tool calls at ${path}`);
         }
 
         // Check for common audio data fields
@@ -507,9 +490,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
         for (const field of audioFields) {
           if (obj[field] && typeof obj[field] === 'string' && obj[field].length > 100) {
             audioParts.push(obj[field]);
-            if (debugLogsEnabled) {
-              console.log(`🎵 Found audio at ${path}.${field}: ${obj[field].length} chars`);
-            }
+            console.log(`🎵 Found audio at ${path}.${field}: ${obj[field].length} chars`);
           }
         }
 
@@ -537,14 +518,12 @@ Always respond conversationally and briefly. Do not send any test messages or gr
     // Handle tool call cancellations first
     if (data.toolCallCancellation && data.toolCallCancellation.ids) {
       console.log(`🔧 Tool calls cancelled: ${data.toolCallCancellation.ids.join(', ')}`);
-      setTestResults(prev => [...prev, `🔧 Tool calls cancelled: ${data.toolCallCancellation.ids.join(', ')}`]);
       return; // Don't process further if tools were cancelled
     }
 
     // Handle tool calls
     if (toolCalls.length > 0) {
       console.log(`🔧 Processing ${toolCalls.length} tool calls`);
-      setTestResults(prev => [...prev, `🔧 Processing ${toolCalls.length} tool calls`]);
 
       const functionResponses: any[] = [];
 
@@ -756,7 +735,6 @@ Always respond conversationally and briefly. Do not send any test messages or gr
 
         console.log('🔧 Sending tool responses:', JSON.stringify(toolResponseMessage, null, 2));
         websocketRef.current.send(JSON.stringify(toolResponseMessage));
-        setTestResults(prev => [...prev, `🔧 Sent ${functionResponses.length} function responses`]);
       }
     }
 
@@ -765,7 +743,6 @@ Always respond conversationally and briefly. Do not send any test messages or gr
       const combinedText = textParts.join(' ');
       if (combinedText.trim()) {
         console.log('💬 Received text response:', combinedText.substring(0, 100) + '...');
-        setTestResults(prev => [...prev, `💬 Text: "${combinedText.substring(0, 100)}${combinedText.length > 100 ? '...' : ''}"`]);
         setResponses(prev => [...prev, {
           text: combinedText,
           timestamp: new Date(),
@@ -788,7 +765,6 @@ Always respond conversationally and briefly. Do not send any test messages or gr
       audioParts.forEach((audioData, index) => {
         foundAudio = true;
         console.log(`🔊 🎵 REAL-TIME AUDIO CHUNK ${index + 1}: ${audioData.length} chars`);
-        setTestResults(prev => [...prev, `🎵 Audio chunk ${index + 1}: ${audioData.length} characters`]);
 
         // Play immediately - NO BUFFERING!
         try {
@@ -800,8 +776,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
     }
 
     if (!foundAudio && !foundText) {
-      setTestResults(prev => [...prev, '⚠️ No audio or text content found in any response path']);
-
+      
       // Log all available keys for debugging
       console.log('🔍 Available response keys:', Object.keys(data));
 
@@ -811,8 +786,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
       const matches = dataStr.match(base64Pattern);
       if (matches && matches.length > 0) {
         console.log('🔍 Found potential base64 data:', matches.length, 'matches');
-        setTestResults(prev => [...prev, `🔍 Found ${matches.length} potential base64 strings in response`]);
-
+        
         // Try to play the first match as audio
         try {
           console.log('🔊 Attempting to play first base64 match as audio...');
@@ -826,14 +800,12 @@ Always respond conversationally and briefly. Do not send any test messages or gr
     // Handle transcription if available
     if (data.server_content?.output_transcription?.text) {
       console.log('📝 Transcription:', data.server_content.output_transcription.text);
-      setTestResults(prev => [...prev, `📝 Transcription: "${data.server_content.output_transcription.text}"`]);
-    }
+          }
 
     // Handle turn completion
     if (data.server_content?.turn_complete) {
       console.log('🔄 Turn complete - stopping speech');
-      setTestResults(prev => [...prev, '🔄 Turn complete - stopping speech']);
-
+      
       // Stop speaking when turn is complete
       if (isSpeaking) {
         setTimeout(() => {
@@ -842,64 +814,24 @@ Always respond conversationally and briefly. Do not send any test messages or gr
           audioStreamRef.current.nextPlayTime = null;
           audioStreamRef.current.hasStarted = false; // Reset for next interaction
           audioStreamRef.current.buffer = []; // Clear any remaining buffer
-          if (debugLogsEnabled) {
-            console.log('🔊 🛑 Stopped speaking and reset stream state');
-          }
+          console.log('🔊 🛑 Stopped speaking and reset stream state');
         }, 500); // Small delay to allow final audio chunks to finish
       }
     }
-  }, [volume, onStartWash, isActive, currentCycle, totalCyclesScheduled, parseAndExecuteCommands, speak, isSpeaking, debugLogsEnabled]);
+  }, [volume, onStartWash, isActive, currentCycle, totalCyclesScheduled, parseAndExecuteCommands, speak, isSpeaking]);
 
   // Simple audio buffer playback function
-  const playAudioBufferDirectly = useCallback((audioBuffer: AudioBuffer) => {
-    if (!audioContextRef.current) return;
-
-    try {
-      console.log('🔊 Playing decoded audio buffer');
-
-      // Stop any currently playing audio
-      if (audioSourceRef.current) {
-        audioSourceRef.current.stop();
-        audioSourceRef.current.disconnect();
-      }
-
-      // Create gain node for volume control
-      const gainNode = audioContextRef.current.createGain();
-      gainNode.gain.value = volume;
-
-      // Create and connect source
-      audioSourceRef.current = audioContextRef.current.createBufferSource();
-      audioSourceRef.current.buffer = audioBuffer;
-      audioSourceRef.current.connect(gainNode);
-      gainNode.connect(audioContextRef.current.destination);
-
-      // Handle playback end
-      audioSourceRef.current.onended = () => {
-        console.log('🔊 Audio playback finished');
-        setIsSpeaking(false);
-        audioSourceRef.current = null;
-      };
-
-      // Start playback
-      audioSourceRef.current.start(0);
-      setIsSpeaking(true);
-      console.log('🔊 Started playing decoded audio');
-
-    } catch (error) {
-      console.error('Error playing audio buffer:', error);
-    }
-  }, [volume]);
-
+  
   
   
   // Real-time audio streaming - play chunks as they arrive
-  const audioStreamRef = useRef<{
-    buffer: Array<{ base64Audio: string; isFirstChunk: boolean }>;
-    isPlaying: boolean;
-    scheduleTimeout: number | null;
-    nextPlayTime: number | null;
-    hasStarted: boolean;
-  }>({ buffer: [], isPlaying: false, scheduleTimeout: null, nextPlayTime: null, hasStarted: false });
+  const audioStreamRef = useRef<AudioStreamRef>({
+    buffer: [],
+    isPlaying: false,
+    scheduleTimeout: null,
+    nextPlayTime: null,
+    hasStarted: false
+  });
 
   // Helper function to play a single audio chunk immediately (must be defined first)
   const playAudioChunkImmediate = useCallback((base64Audio: string, isFirstChunk: boolean, scheduledTime?: number) => {
@@ -954,14 +886,14 @@ Always respond conversationally and briefly. Do not send any test messages or gr
         audioStreamRef.current.nextPlayTime = startTime + (audioBuffer.length / 24000);
       }
 
-      if (debugLogsEnabled) {
+      if (isFirstChunk) {
         const duration = pcmData.length / 24000;
-        console.log(`🔊 🎵 Playing chunk: ${pcmData.length} samples, ${duration.toFixed(3)}s duration`);
+        console.log(`🔊 🎵 Playing first chunk: ${pcmData.length} samples, ${duration.toFixed(3)}s duration`);
       }
     } catch (error) {
       console.error('❌ Error in immediate audio playback:', error);
     }
-  }, [volume, debugLogsEnabled]);
+  }, [volume]);
 
   // Helper function to start playback with buffered chunks (defined after playAudioChunkImmediate)
   const startBufferedPlayback = useCallback(() => {
@@ -987,9 +919,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
       audioStreamRef.current.buffer = [];
       audioStreamRef.current.nextPlayTime = nextStartTime;
 
-      if (debugLogsEnabled) {
-        console.log(`🔊 ✅ Started buffered playback with ${chunkCount} chunks`);
-      }
+      console.log(`🔊 ✅ Started buffered playback with ${chunkCount} chunks`);
 
     } catch (error) {
       console.error('❌ Error starting buffered playback:', error);
@@ -1013,18 +943,14 @@ Always respond conversationally and briefly. Do not send any test messages or gr
           }
         }, 150); // 150ms buffer to collect initial chunks
 
-        if (debugLogsEnabled) {
-          console.log('🔊 Buffering first chunk, waiting for more...');
-        }
+        console.log('🔊 Buffering first chunk, waiting for more...');
         return;
       }
 
       // Add to buffer if we're still in the initial buffering phase
       if (!audioStreamRef.current.isPlaying && audioStreamRef.current.hasStarted) {
         audioStreamRef.current.buffer.push({ base64Audio, isFirstChunk: false });
-        if (debugLogsEnabled) {
-          console.log(`🔊 Added to buffer (${audioStreamRef.current.buffer.length} chunks)`);
-        }
+        console.log(`🔊 Added to buffer (${audioStreamRef.current.buffer.length} chunks)`);
         return;
       }
 
@@ -1036,13 +962,10 @@ Always respond conversationally and briefly. Do not send any test messages or gr
     } catch (error) {
       console.error('❌ Error in audio chunk buffering:', error);
     }
-  }, [debugLogsEnabled, startBufferedPlayback, playAudioChunkImmediate]);
+  }, [startBufferedPlayback, playAudioChunkImmediate]);
 
   // Simple wrapper that plays immediately (real-time streaming)
-  const playGeminiAudio = useCallback((base64Audio: string, isFirstChunk: boolean = false) => {
-    playAudioChunk(base64Audio, isFirstChunk);
-  }, [playAudioChunk]);
-
+  
   // Helper function to play audio buffer
   const playAudioBuffer = useCallback(async (arrayBuffer: ArrayBuffer) => {
     if (!audioContextRef.current) return;
@@ -1186,275 +1109,10 @@ Always respond conversationally and briefly. Do not send any test messages or gr
 
   // ========== AUDIO TESTING MODULES ==========
 
-  // Test function: Record audio → Convert to PCM → Simulate Gemini response → Play back
-  const testAudioPipeline = useCallback(async () => {
-    try {
-      console.log('🧪 Starting audio pipeline test...');
-      setTestResults(prev => [...prev, '🧪 Starting audio pipeline test...']);
-      setIsAudioTesting(true);
-
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-        if (audioContextRef.current.state === 'suspended') {
-          await audioContextRef.current.resume();
-        }
-      }
-
-      // Step 1: Record a short audio sample (3 seconds)
-      setTestResults(prev => [...prev, '📢 Recording 3-second audio sample...']);
-      const recordingStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 16000
-        }
-      });
-
-      const mediaRecorder = new MediaRecorder(recordingStream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
-
-      const audioChunks: Blob[] = [];
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunks.push(event.data);
-        }
-      };
-
-      mediaRecorder.start();
-      setTestResults(prev => [...prev, '🎙️ Recording... Speak now!']);
-
-      // Record for 3 seconds
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      mediaRecorder.stop();
-      setTestResults(prev => [...prev, '✅ Recording complete']);
-
-      // Wait for recording to finish
-      await new Promise<void>((resolve) => {
-        mediaRecorder.onstop = () => {
-          recordingStream.getTracks().forEach(track => track.stop());
-          resolve();
-        };
-      });
-
-      const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
-      setTestResults(prev => [...prev, `📊 Recorded audio size: ${audioBlob.size} bytes`]);
-
-      // Step 2: Convert to PCM using our Gemini-style conversion
-      setTestResults(prev => [...prev, '🔄 Converting to 16kHz 16-bit PCM...']);
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioBuffer = await audioContextRef.current!.decodeAudioData(arrayBuffer);
-
-      // Analyze original audio levels
-      const originalData = audioBuffer.getChannelData(0);
-      let maxOriginalValue = 0;
-      let avgOriginalValue = 0;
-      for (let i = 0; i < originalData.length; i++) {
-        const abs = Math.abs(originalData[i]);
-        maxOriginalValue = Math.max(maxOriginalValue, abs);
-        avgOriginalValue += abs;
-      }
-      avgOriginalValue /= originalData.length;
-
-      setTestResults(prev => [...prev, `📊 Original audio - Max: ${maxOriginalValue.toFixed(4)}, Avg: ${avgOriginalValue.toFixed(4)}`]);
-
-      // Apply normalization to prevent clipping
-      const targetMax = 0.7; // Target max amplitude (70% of full scale)
-      const normalizationFactor = maxOriginalValue > targetMax ? targetMax / maxOriginalValue : 1.0;
-
-      setTestResults(prev => [...prev, `🔧 Normalization factor: ${normalizationFactor.toFixed(4)}`]);
-
-      // Resample to 16kHz if needed with proper normalization
-      const targetSampleRate = 16000;
-      let pcmData: Int16Array;
-
-      if (audioBuffer.sampleRate !== targetSampleRate) {
-        // Simple resampling with normalization
-        const ratio = targetSampleRate / audioBuffer.sampleRate;
-        const newLength = Math.floor(audioBuffer.length * ratio);
-        pcmData = new Int16Array(newLength);
-
-        for (let i = 0; i < newLength; i++) {
-          const sourceIndex = Math.floor(i / ratio);
-          const normalizedValue = audioBuffer.getChannelData(0)[sourceIndex] * normalizationFactor;
-          const value = normalizedValue * 32767;
-          pcmData[i] = Math.max(-32768, Math.min(32767, value));
-        }
-      } else {
-        pcmData = new Int16Array(audioBuffer.length);
-        for (let i = 0; i < audioBuffer.length; i++) {
-          const normalizedValue = audioBuffer.getChannelData(0)[i] * normalizationFactor;
-          pcmData[i] = Math.max(-32768, Math.min(32767, normalizedValue * 32767));
-        }
-      }
-
-      // Check PCM levels after conversion
-      let maxPcmValue = 0;
-      for (let i = 0; i < pcmData.length; i++) {
-        maxPcmValue = Math.max(maxPcmValue, Math.abs(pcmData[i]));
-      }
-      const maxPcmPercent = (maxPcmValue / 32768) * 100;
-      setTestResults(prev => [...prev, `📊 PCM levels - Max: ${maxPcmValue}, ${maxPcmPercent.toFixed(1)}% of full scale`]);
-
-      setTestResults(prev => [...prev, `✅ PCM data created: ${pcmData.length} samples at ${targetSampleRate}Hz`]);
-
-      // Step 3: Convert to base64 (simulating what we'd send to Gemini)
-      const uint8Array = new Uint8Array(pcmData.buffer);
-      const base64Data = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
-
-      setTestResults(prev => [...prev, `📦 Base64 encoded: ${base64Data.length} characters`]);
-
-      // Step 4: Simulate Gemini response by converting to 24kHz (as Gemini would do)
-      setTestResults(prev => [...prev, '🎭 Simulating Gemini response (16kHz → 24kHz)...']);
-      const outputSampleRate = 24000;
-      const resampleRatio = outputSampleRate / targetSampleRate;
-      const outputLength = Math.floor(pcmData.length * resampleRatio);
-      const geminiPcmData = new Int16Array(outputLength);
-
-      // Simple linear interpolation for resampling
-      for (let i = 0; i < outputLength; i++) {
-        const sourceIndex = i / resampleRatio;
-        const index1 = Math.floor(sourceIndex);
-        const index2 = Math.min(index1 + 1, pcmData.length - 1);
-        const fraction = sourceIndex - index1;
-
-        geminiPcmData[i] = Math.floor(
-          pcmData[index1] * (1 - fraction) + pcmData[index2] * fraction
-        );
-      }
-
-      setTestResults(prev => [...prev, `🎯 Gemini-style PCM: ${geminiPcmData.length} samples at ${outputSampleRate}Hz`]);
-
-      // Step 5: Play back using our existing audio playback function
-      setTestResults(prev => [...prev, '🔊 Playing back simulated Gemini response...']);
-      await playSimulatedGeminiAudio(geminiPcmData, outputSampleRate);
-
-      setTestResults(prev => [...prev, '✅ Audio pipeline test complete!']);
-
-    } catch (error) {
-      console.error('❌ Audio pipeline test failed:', error);
-      setTestResults(prev => [...prev, `❌ Test failed: ${error.message}`]);
-    } finally {
-      setIsAudioTesting(false);
-    }
-  }, []);
-
-  // Helper function to play simulated Gemini audio
-  const playSimulatedGeminiAudio = useCallback(async (pcmData: Int16Array, sampleRate: number) => {
-    if (!audioContextRef.current) return;
-
-    try {
-      // Create audio buffer from PCM data
-      const audioBuffer = audioContextRef.current.createBuffer(1, pcmData.length, sampleRate);
-      const channelData = audioBuffer.getChannelData(0);
-
-      // Convert 16-bit PCM to float32 (-1.0 to 1.0)
-      for (let i = 0; i < pcmData.length; i++) {
-        channelData[i] = pcmData[i] / 32768.0;
-      }
-
-      // Check if we have meaningful audio data
-      const maxValue = Math.max(...channelData.map(Math.abs));
-      setTestResults(prev => [...prev, `📊 Max audio amplitude: ${maxValue.toFixed(4)}`]);
-
-      if (maxValue > 0.001) {
-        const gainNode = audioContextRef.current.createGain();
-        gainNode.gain.value = volume;
-
-        const source = audioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(gainNode);
-        gainNode.connect(audioContextRef.current.destination);
-
-        source.onended = () => {
-          console.log('🔊 Simulated Gemini audio playback finished');
-          setTestResults(prev => [...prev, '🔊 Playback finished']);
-        };
-
-        source.start(0);
-        setIsSpeaking(true);
-        setTestResults(prev => [...prev, '🔊 Playing simulated Gemini response...']);
-
-        // Wait for playback to finish
-        await new Promise(resolve => {
-          source.onended = resolve as any;
-        });
-
-        setIsSpeaking(false);
-      } else {
-        setTestResults(prev => [...prev, '⚠️ Audio data too quiet to play']);
-      }
-    } catch (error) {
-      console.error('Error playing simulated audio:', error);
-      setTestResults(prev => [...prev, `❌ Playback error: ${error.message}`]);
-    }
-  }, [volume]);
-
-  // Test function: Play a test tone to verify audio system works
-  const playTestTone = useCallback(() => {
-    if (!audioContextRef.current) return;
-
-    try {
-      setTestResults(prev => [...prev, '🔔 Playing 440Hz test tone...']);
-
-      const testBuffer = audioContextRef.current.createBuffer(1, audioContextRef.current.sampleRate * 1, audioContextRef.current.sampleRate);
-      const channelData = testBuffer.getChannelData(0);
-
-      for (let i = 0; i < channelData.length; i++) {
-        channelData[i] = Math.sin(2 * Math.PI * 440 * i / audioContextRef.current.sampleRate) * 0.3;
-      }
-
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = testBuffer;
-      source.connect(audioContextRef.current.destination);
-      source.start();
-
-      setTestResults(prev => [...prev, '✅ Test tone played successfully']);
-
-    } catch (error) {
-      console.error('Error playing test tone:', error);
-      setTestResults(prev => [...prev, `❌ Test tone error: ${error.message}`]);
-    }
-  }, []);
-
-  // Test function: Create and play a test PCM tone using the same Gemini audio playback path
-  const testGeminiPlayback = useCallback(() => {
-    if (!audioContextRef.current) return;
-
-    try {
-      setTestResults(prev => [...prev, '🧪 Testing Gemini playback with synthetic PCM...']);
-
-      // Create a 440Hz tone at 24kHz for 1 second
-      const sampleRate = 24000;
-      const duration = 1; // 1 second
-      const frequency = 440; // 440Hz
-      const samples = sampleRate * duration;
-
-      // Create 16-bit PCM data
-      const pcmData = new Int16Array(samples);
-      for (let i = 0; i < samples; i++) {
-        pcmData[i] = Math.floor(Math.sin(2 * Math.PI * frequency * i / sampleRate) * 0.5 * 32767);
-      }
-
-      // Convert to base64 (same as Gemini would send)
-      const uint8Array = new Uint8Array(pcmData.buffer);
-      const base64Data = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
-
-      setTestResults(prev => [...prev, `🔊 Created test PCM: ${samples} samples at ${sampleRate}Hz`]);
-      setTestResults(prev => [...prev, `📦 Base64 length: ${base64Data.length}`]);
-
-      // Test the exact same playback function we use for Gemini
-      console.log('🧪 Testing playAudioChunk function with synthetic data...');
-      playAudioChunk(base64Data, true); // isFirstChunk = true
-
-    } catch (error) {
-      console.error('Error testing Gemini playback:', error);
-      setTestResults(prev => [...prev, `❌ Playback test error: ${error.message}`]);
-    }
-  }, [playAudioChunk]);
-
+  
+  
+  
+  
   // Setup audio recording for Gemini Live using proper PCM format (16-bit, 16kHz, mono)
   const setupAudioRecording = useCallback(async () => {
     try {
@@ -1523,7 +1181,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
           }
 
           // Debug logging - only log occasionally to avoid spam
-          if (debugLogsEnabled && (audioChunkCounter < 10 || audioChunkCounter % 100 === 0)) {
+          if (audioChunkCounter < 10 || audioChunkCounter % 100 === 0) {
             console.log(`🎤 PCM chunk #${audioChunkCounter}: level=${level.toFixed(2)}, max=${maxSample.toFixed(4)}`);
           }
 
@@ -1551,7 +1209,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
 
           try {
             websocketRef.current.send(JSON.stringify(audioMessage));
-            if (debugLogsEnabled && audioChunkCounter < 5) {
+            if (audioChunkCounter < 5) {
               console.log(`🎤 📤 Sent PCM chunk #${audioChunkCounter}: ${pcmData.length} samples`);
             }
           } catch (error) {
@@ -1579,29 +1237,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
     }
   }, []);
 
-  // Test function: Send simple text to test connection
-  const testTextConnection = useCallback(() => {
-    if (websocketRef.current?.readyState === WebSocket.OPEN) {
-      const testTextMessage = "Hello! Can you hear me? Please respond with a simple greeting.";
-      console.log('🧪 Testing connection with text message:', testTextMessage);
-
-      const textMessage = {
-        realtime_input: {
-          text: testTextMessage
-        }
-      };
-
-      try {
-        websocketRef.current.send(JSON.stringify(textMessage));
-        setTestResults(prev => [...prev, '📤 Text message sent to Gemini']);
-      } catch (error) {
-        setTestResults(prev => [...prev, `❌ Failed to send text: ${error.message}`]);
-      }
-    } else {
-      setTestResults(prev => [...prev, `❌ WebSocket not connected (state: ${websocketRef.current?.readyState})`]);
-    }
-  }, []);
-
+  
   // Text input fallback
   const handleTextInput = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1914,107 +1550,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
 
         <div ref={messagesEndRef} />
 
-        {/* Audio Testing Interface */}
-        {(testResults.length > 0 || isAudioTesting) && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg space-y-2"
-          >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-purple-400">🧪 Audio Pipeline Test</span>
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setTestResults([])}
-                className="p-1 bg-purple-500/20 rounded hover:bg-purple-500/30 transition-colors"
-                title="Clear test results"
-              >
-                <svg className="w-3 h-3 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </motion.button>
-            </div>
-
-            <div className="max-h-32 overflow-y-auto space-y-1">
-              {testResults.map((result, index) => (
-                <div key={index} className="text-xs text-purple-300 opacity-90">
-                  {result}
-                </div>
-              ))}
-              {isAudioTesting && (
-                <div className="flex items-center space-x-2">
-                  <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></div>
-                  <span className="text-xs text-purple-300">Testing in progress...</span>
-                </div>
-              )}
-            </div>
-
-            <div className="flex space-x-2 pt-2 border-t border-purple-500/20">
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={playTestTone}
-                disabled={isAudioTesting}
-                className="px-3 py-1 bg-purple-500/20 rounded text-xs text-purple-400 hover:bg-purple-500/30 transition-colors disabled:opacity-50"
-              >
-                🔔 Test Tone
-              </motion.button>
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={testAudioPipeline}
-                disabled={isAudioTesting}
-                className="px-3 py-1 bg-purple-500/20 rounded text-xs text-purple-400 hover:bg-purple-500/30 transition-colors disabled:opacity-50"
-              >
-                🎤 Record → Play
-              </motion.button>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Audio Testing Controls (Always Visible) */}
-        <div className="flex flex-wrap gap-2 p-2 bg-gray-800/20 rounded-lg">
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={playTestTone}
-            className="px-3 py-1 bg-blue-500/20 rounded text-xs text-blue-400 hover:bg-blue-500/30 transition-colors"
-            title="Test audio system with 440Hz tone"
-          >
-            🔔 Test Audio
-          </motion.button>
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={testGeminiPlayback}
-            className="px-3 py-1 bg-orange-500/20 rounded text-xs text-orange-400 hover:bg-orange-500/30 transition-colors"
-            title="Test Gemini playback with synthetic PCM data"
-          >
-            🧪 Test PCM Path
-          </motion.button>
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={testAudioPipeline}
-            disabled={isAudioTesting}
-            className="px-3 py-1 bg-green-500/20 rounded text-xs text-green-400 hover:bg-green-500/30 transition-colors disabled:opacity-50"
-            title="Record 3s → Convert to PCM → Play back"
-          >
-            🎤 Record Test
-          </motion.button>
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={testTextConnection}
-            disabled={!isSDKReady}
-            className="px-3 py-1 bg-purple-500/20 rounded text-xs text-purple-400 hover:bg-purple-500/30 transition-colors disabled:opacity-50"
-            title="Test Gemini connection with text message"
-          >
-            💬 Test Text to AI
-          </motion.button>
-        </div>
-
+        
         {/* Text Input Mode */}
         {useTextInput && (
           <motion.form
@@ -2079,19 +1615,7 @@ Always respond conversationally and briefly. Do not send any test messages or gr
               <Activity className="w-4 h-4 text-gray-400" />
             </button>
 
-            {/* Debug Logs Toggle */}
-            <button
-              onClick={() => setDebugLogsEnabled(!debugLogsEnabled)}
-              className={`p-2 rounded-lg transition-colors ${
-                debugLogsEnabled
-                  ? 'bg-green-600/50 hover:bg-green-500/50'
-                  : 'bg-gray-800/50 hover:bg-gray-700/50'
-              }`}
-              title={debugLogsEnabled ? "Disable debug logs" : "Enable debug logs"}
-            >
-              <Settings className="w-4 h-4 text-gray-400" />
-            </button>
-
+            
             {/* Toggle Input Mode */}
             <button
               onClick={toggleInputMode}
