@@ -179,11 +179,11 @@ export class GeminiAudioService {
       this.processor.connect(this.audioContext!.destination);
 
       this.isRecording = true;
-      console.log('🎤 ✅ Voice recording started');
-      console.log(`🎤 Sample rate: ${this.audioContext!.sampleRate}Hz`);
-      console.log(`🎤 Buffer size: 4096 samples`);
-      console.log('🎤 Ready to capture audio');
-      console.log('🎤 WARNING: You may hear echo - this is normal and required for processing');
+      // Voice recording started
+      // Sample rate configured
+      // Buffer size set
+      // Audio ready
+      // Echo warning noted
 
       return true;
 

@@ -15,6 +15,7 @@ export interface GeminiLiveProps {
   totalCycles: number;
   onStartWash: (config: any) => void;
   onStopWash?: (reason?: string) => void;
+  onGetConsumption?: (config: any) => void;
   isActive: boolean;
   currentCycle: number;
   totalCyclesScheduled: number;
@@ -24,7 +25,7 @@ export interface GeminiLiveProps {
 export interface GeminiResponse {
   text: string;
   action?: {
-    type: 'start_wash' | 'stop_wash' | 'get_metrics' | 'configure_wash';
+    type: 'start_wash' | 'stop_wash' | 'get_metrics' | 'configure_wash' | 'get_consumption';
     config?: any;
   };
   confidence: number;
@@ -269,4 +270,38 @@ export interface DebugInfo {
   type: MessageType;
   message: string;
   data?: any;
+}
+
+export interface GetConsumptionParams {
+  program?: string;
+  temperature?: number;
+  spin_speed?: number;
+  duration?: number;
+  water_level?: 'low' | 'medium' | 'high';
+  extra_rinse?: boolean;
+  pre_wash?: boolean;
+}
+
+export interface ConsumptionResponse {
+  program: string;
+  temperature: number;
+  spin_speed: number;
+  duration: number;
+  water_level: string;
+  extra_rinse: boolean;
+  pre_wash: boolean;
+  electricity_usage: {
+    kw: number;
+    estimated_cost: number;
+  };
+  water_usage: {
+    liters: number;
+    estimated_cost: number;
+  };
+  total_estimated_cost: number;
+  efficiency_rating: string;
+  environmental_impact: {
+    co2_emissions_kg: number;
+    water_efficiency: string;
+  };
 }

@@ -131,10 +131,36 @@ export default function SidebarLayout({
                   initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -20 }}
-                  className="mt-3 text-center"
+                  className="mt-3"
                 >
-                  <div className="text-lg font-mono text-white">{timeRemaining}</div>
-                  <div className="text-xs text-slate-400">remaining</div>
+                  <div className="text-center mb-2">
+                    <div className="text-lg font-mono text-white">{timeRemaining}</div>
+                    <div className="text-xs text-slate-400">remaining</div>
+                  </div>
+
+                  {/* Stage Indicators */}
+                  <div className="space-y-1 text-xs">
+                    <div className={`flex items-center space-x-2 ${progress > 15 ? 'text-blue-400' : 'text-slate-500'}`}>
+                      <div className={`w-2 h-2 rounded-full ${progress > 15 ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                      <span>Filling</span>
+                    </div>
+                    <div className={`flex items-center space-x-2 ${progress > 30 ? 'text-blue-400' : 'text-slate-500'}`}>
+                      <div className={`w-2 h-2 rounded-full ${progress > 30 ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                      <span>Washing</span>
+                    </div>
+                    <div className={`flex items-center space-x-2 ${progress > 60 ? 'text-blue-400' : 'text-slate-500'}`}>
+                      <div className={`w-2 h-2 rounded-full ${progress > 60 ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                      <span>Rinsing</span>
+                    </div>
+                    <div className={`flex items-center space-x-2 ${progress > 85 ? 'text-blue-400' : 'text-slate-500'}`}>
+                      <div className={`w-2 h-2 rounded-full ${progress > 85 ? 'bg-blue-400' : 'bg-slate-600'}`} />
+                      <span>Spinning</span>
+                    </div>
+                    <div className={`flex items-center space-x-2 ${progress >= 100 ? 'text-green-400' : 'text-slate-500'}`}>
+                      <div className={`w-2 h-2 rounded-full ${progress >= 100 ? 'bg-green-400' : 'bg-slate-600'}`} />
+                      <span>Complete</span>
+                    </div>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -269,23 +295,7 @@ export default function SidebarLayout({
               </AnimatePresence>
             </motion.button>
 
-            <AnimatePresence>
-              {isExpanded && (
-                <motion.button
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={(e) => e.stopPropagation()}
-                  className="w-full py-3 px-4 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg font-medium transition-all flex items-center justify-center space-x-2"
-                >
-                  <Settings size={18} />
-                  <span>Settings</span>
-                </motion.button>
-              )}
-            </AnimatePresence>
-          </motion.div>
+            </motion.div>
         </div>
       </motion.aside>
 

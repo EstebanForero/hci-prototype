@@ -7,37 +7,81 @@ interface WashingMachineProps {
   health: number;
   cyclesRemaining: number;
   isActive: boolean;
+  electricityUsage?: number;
+  waterUsage?: number;
   useCustomModel?: boolean;
   modelUrl?: string;
 }
 
-// Water Particle System - Confined spherical rotation
+// Water Particle System - Properly confined in drum center
 function WaterParticles({ isActive }: { isActive: boolean }) {
   const particlesRef = useRef<THREE.Group>(null);
-  const particleCount = 100;
+  const particleCount = 80;
 
   useFrame((state) => {
     if (particlesRef.current && isActive) {
       const time = state.clock.elapsedTime;
 
       particlesRef.current.children.forEach((particle, i) => {
-        // Spherical coordinates - much smaller radius
-        const theta = (i / particleCount) * Math.PI * 2 + time * 0.8;
-        const phi = Math.acos(1 - 2 * (i / particleCount)) + time * 0.3;
-        const radius = 0.12 + Math.sin(time * 2 + i * 0.1) * 0.03; // Reduced by ~5x
+        // Much smaller radius - tightly confined in center of drum
+        const drumRadius = 0.08; // Very small radius in center
+        const drumHeight = 0.15; // Small height range
+
+        // Spherical coordinates for tight spherical motion
+        const phi = (i / particleCount) * Math.PI; // Vertical angle (0 to π)
+        const theta = (i / particleCount) * Math.PI * 2 + time * 2; // Horizontal rotation
+
+        // Small radius oscillation
+        const radiusOscillation = Math.sin(time * 3 + i * 0.2) * 0.02;
+        const currentRadius = drumRadius + radiusOscillation;
 
         // Convert spherical to Cartesian coordinates
-        particle.position.x = radius * Math.sin(phi) * Math.cos(theta);
-        particle.position.y = radius * Math.cos(phi) * 0.6; // Flatten sphere
-        particle.position.z = radius * Math.sin(phi) * Math.sin(theta);
+        let x = currentRadius * Math.sin(phi) * Math.cos(theta);
+        let y = currentRadius * Math.cos(phi) * 0.6; // Flatten for drum shape
+        let z = currentRadius * Math.sin(phi) * Math.sin(theta);
 
-        // Individual particle rotation
-        particle.rotation.x += 0.03;
-        particle.rotation.y += 0.02;
+        // Add gentle drum rotation
+        const drumRotationSpeed = 1.2;
+        const rotatedX = x * Math.cos(time * drumRotationSpeed) - z * Math.sin(time * drumRotationSpeed);
+        const rotatedZ = x * Math.sin(time * drumRotationSpeed) + z * Math.cos(time * drumRotationSpeed);
 
-        // Pulsing effect
-        const scale = 0.008 + Math.sin(time * 4 + i * 0.2) * 0.004;
-        particle.scale.setScalar(scale);
+        // Very small turbulence
+        const turbulenceX = Math.sin(time * 10 + i * 0.5) * 0.005;
+        const turbulenceY = Math.cos(time * 8 + i * 0.3) * 0.005;
+        const turbulenceZ = Math.sin(time * 9 + i * 0.4) * 0.005;
+
+        // Final position with tight constraints
+        let finalX = rotatedX + turbulenceX;
+        let finalY = y + turbulenceY;
+        let finalZ = rotatedZ + turbulenceZ;
+
+        // Tight boundary constraints
+        const distanceFromCenter = Math.sqrt(finalX * finalX + finalZ * finalZ);
+        const maxRadius = drumRadius * 0.95; // Keep very tight
+
+        if (distanceFromCenter > maxRadius) {
+          const scale = maxRadius / distanceFromCenter;
+          finalX *= scale;
+          finalZ *= scale;
+        }
+
+        // Constrain Y tightly
+        finalY = Math.max(-drumHeight/2, Math.min(drumHeight/2, finalY));
+
+        // Smooth particle movement
+        particle.position.x += (finalX - particle.position.x) * 0.15;
+        particle.position.y += (finalY - particle.position.y) * 0.15;
+        particle.position.z += (finalZ - particle.position.z) * 0.15;
+
+        // Particle rotation
+        particle.rotation.x += 0.02;
+        particle.rotation.y += 0.03;
+        particle.rotation.z += 0.01;
+
+        // Larger, more visible droplets
+        const baseScale = 0.012; // Much larger base size
+        const pulseEffect = Math.sin(time * 6 + i * 0.4) * 0.003;
+        particle.scale.setScalar(baseScale + pulseEffect);
       });
     }
   });
@@ -46,15 +90,15 @@ function WaterParticles({ isActive }: { isActive: boolean }) {
     <group ref={particlesRef} visible={isActive}>
       {Array.from({ length: particleCount }).map((_, i) => (
         <mesh key={`water-${i}`}>
-          <sphereGeometry args={[0.008, 4, 4]} />
+          <sphereGeometry args={[0.012, 12, 12]} />
           <meshStandardMaterial
-            color="#3b82f6"
+            color="#1e40af"
+            emissive="#60a5fa"
+            emissiveIntensity={1.2}
             transparent
-            opacity={0.6}
+            opacity={0.8}
             roughness={0.1}
             metalness={0.3}
-            emissive="#1e40af"
-            emissiveIntensity={0.4}
           />
         </mesh>
       ))}
@@ -116,7 +160,7 @@ function BubbleSystem({ isActive }: { isActive: boolean }) {
 }
 
 // GLB Model Loader Component
-function GLBModel({ url, health, cyclesRemaining, isActive }: { url: string, health: number, cyclesRemaining: number, isActive: boolean }) {
+function GLBModel({ url, health, cyclesRemaining, isActive, electricityUsage = 0, waterUsage = 0 }: { url: string, health: number, cyclesRemaining: number, isActive: boolean, electricityUsage?: number, waterUsage?: number }) {
   const meshRef = useRef<THREE.Group>(null);
   const [model, setModel] = useState<THREE.Group | null>(null);
   const [loading, setLoading] = useState(true);
@@ -270,22 +314,22 @@ function GLBModel({ url, health, cyclesRemaining, isActive }: { url: string, hea
             <BubbleSystem isActive={isActive} />
           </group>
 
-          {/* Add health indicator */}
+          {/* Electricity usage indicator */}
           <CameraFacingText
             position={[-2.5, 1.5, 0]}
-            color={health > 70 ? '#4ade80' : health > 40 ? '#fbbf24' : '#ef4444'}
-            fontSize={0.18}
+            color={isActive ? '#fbbf24' : '#6b7280'}
+            fontSize={0.16}
           >
-            {`Health: ${health}%`}
+            {`⚡ ${electricityUsage} kW`}
           </CameraFacingText>
 
-          {/* Add cycles indicator */}
+          {/* Water usage indicator */}
           <CameraFacingText
             position={[2.5, 1.5, 0]}
-            color="#60a5fa"
-            fontSize={0.18}
+            color={isActive ? '#3b82f6' : '#6b7280'}
+            fontSize={0.16}
           >
-            {`Cycles: ${cyclesRemaining}`}
+            {`💧 ${waterUsage} L`}
           </CameraFacingText>
 
           {/* Status light */}
@@ -332,29 +376,68 @@ function GLBModel({ url, health, cyclesRemaining, isActive }: { url: string, hea
 
 function CameraFacingText({ children, position, color = "white", fontSize = 0.15 }: any) {
   const { camera } = useThree();
-  const textRef = useRef<THREE.Mesh>(null);
+  const spriteRef = useRef<THREE.Sprite>(null);
 
   useFrame(() => {
-    if (textRef.current) {
-      textRef.current.quaternion.copy(camera.quaternion);
+    if (spriteRef.current) {
+      // Always face the camera - this is the correct way for sprites
+      spriteRef.current.material.rotation = 0;
     }
   });
 
+  // Create a high-quality canvas for the text
+  const createTextTexture = (text: string) => {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d')!;
+
+    // Much smaller canvas for compact text
+    const scale = 2; // 2x resolution for crisp text
+    canvas.width = 64 * scale;
+    canvas.height = 20 * scale;
+
+    // Scale context for high DPI
+    context.scale(scale, scale);
+
+    // Transparent background
+    context.fillStyle = 'rgba(0, 0, 0, 0)';
+    context.fillRect(0, 0, 64, 20);
+
+    // Much smaller font size for professional look
+    const fontSizePixels = 8;
+    context.font = `600 ${fontSizePixels}px 'Inter', system-ui, sans-serif`;
+    context.fillStyle = color;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+
+    // Subtle shadow for depth
+    context.shadowColor = 'rgba(0, 0, 0, 0.8)';
+    context.shadowBlur = 1;
+    context.shadowOffsetX = 0.5;
+    context.shadowOffsetY = 0.5;
+
+    context.fillText(text, 32, 10);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+
+    return texture;
+  };
+
   return (
-    <Text
-      ref={textRef}
-      position={position}
-      fontSize={fontSize}
-      color={color}
-      anchorX="center"
-      anchorY="middle"
-    >
-      {children}
-    </Text>
+    <sprite ref={spriteRef} position={position} scale={[0.15, 0.15, 0.15]}>
+      <spriteMaterial
+        map={createTextTexture(children as string)}
+        transparent={true}
+        alphaTest={0.01}
+        sizeAttenuation={false}
+      />
+    </sprite>
   );
 }
 
-function WashingMachineModel({ health, cyclesRemaining, isActive }: WashingMachineProps) {
+function WashingMachineModel({ health, cyclesRemaining, isActive, electricityUsage = 0, waterUsage = 0 }: WashingMachineProps) {
   const meshRef = useRef<THREE.Group>(null);
   const drumRef = useRef<THREE.Mesh>(null);
   const motorRef = useRef<THREE.Mesh>(null);
@@ -365,13 +448,60 @@ function WashingMachineModel({ health, cyclesRemaining, isActive }: WashingMachi
 
   const [hoveredPart, setHoveredPart] = useState<string>('');
 
+  // Simple noise function for realistic motion
+  const noise = (x: number, y: number, z: number) => {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    const Z = Math.floor(z) & 255;
+    return (X * 12.9898 + Y * 78.233 + Z * 37.719) % 1;
+  };
+
   useFrame((state, delta) => {
-    if (meshRef.current) {
-      meshRef.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.5) * 0.1;
+    const time = state.clock.elapsedTime;
+
+    if (meshRef.current && isActive) {
+      // Gentle swaying motion - main body movement
+      const swayX = Math.sin(time * 0.8) * 0.03 + noise(time * 0.1, 0, 0) * 0.01;
+      const swayZ = Math.cos(time * 0.6) * 0.02 + noise(0, time * 0.1, 0) * 0.008;
+
+      meshRef.current.rotation.x = swayX;
+      meshRef.current.rotation.z = swayZ;
+
+      // Vibration effect - high frequency small movements
+      const vibrationX = Math.sin(time * 15) * 0.002;
+      const vibrationY = Math.cos(time * 12) * 0.001;
+      const vibrationZ = Math.sin(time * 18) * 0.002;
+
+      meshRef.current.position.x = vibrationX;
+      meshRef.current.position.y = vibrationY;
+      meshRef.current.position.z = vibrationZ;
+
+      // Occasional "bump" motion - simulating unbalanced load
+      if (Math.sin(time * 0.3) > 0.8) {
+        const bumpX = Math.sin(time * 25) * 0.008;
+        const bumpZ = Math.cos(time * 20) * 0.006;
+        meshRef.current.rotation.x += bumpX;
+        meshRef.current.rotation.z += bumpZ;
+      }
+    } else if (meshRef.current) {
+      // Gentle idle motion when not active
+      meshRef.current.rotation.y = Math.sin(time * 0.2) * 0.02;
     }
 
+    // Rotate the drum when active with variable speed
     if (drumRef.current && isActive) {
-      drumRef.current.rotation.x += delta * 2;
+      // Variable rotation speed simulating different wash cycles
+      const baseSpeed = delta * 2;
+      const speedVariation = Math.sin(time * 0.4) * delta;
+      const noiseSpeed = noise(time * 0.05, 0, 0) * delta * 0.5;
+
+      drumRef.current.rotation.y += baseSpeed + speedVariation + noiseSpeed;
+
+      // Add slight wobble to drum rotation
+      const wobbleX = Math.sin(time * 8) * 0.005;
+      const wobbleZ = Math.cos(time * 6) * 0.004;
+      drumRef.current.rotation.x = wobbleX;
+      drumRef.current.rotation.z = wobbleZ;
     }
   });
 
@@ -676,22 +806,22 @@ function WashingMachineModel({ health, cyclesRemaining, isActive }: WashingMachi
         )}
       </group>
 
-      {/* Health Indicator - Always facing camera */}
+      {/* Electricity Usage - Always facing camera */}
       <CameraFacingText
         position={[-2.5, 1.5, 0]}
-        color={healthColor}
-        fontSize={0.18}
+        color={isActive ? '#fbbf24' : '#6b7280'}
+        fontSize={0.16}
       >
-        {`Health: ${health}%`}
+        {`⚡ ${electricityUsage} kW`}
       </CameraFacingText>
 
-      {/* Cycles Indicator - Always facing camera */}
+      {/* Water Usage - Always facing camera */}
       <CameraFacingText
         position={[2.5, 1.5, 0]}
-        color="#60a5fa"
-        fontSize={0.18}
+        color={isActive ? '#3b82f6' : '#6b7280'}
+        fontSize={0.16}
       >
-        {`Cycles: ${cyclesRemaining}`}
+        {`💧 ${waterUsage} L`}
       </CameraFacingText>
 
       {/* Part Info - Always facing camera */}
@@ -747,6 +877,8 @@ export default function WashingMachine3D({
   health,
   cyclesRemaining,
   isActive,
+  electricityUsage = 0,
+  waterUsage = 0,
   useCustomModel = false,
   modelUrl = '/models/washer.glb'
 }: WashingMachineProps) {
@@ -796,6 +928,8 @@ export default function WashingMachine3D({
               health={health}
               cyclesRemaining={cyclesRemaining}
               isActive={isActive}
+              electricityUsage={electricityUsage}
+              waterUsage={waterUsage}
             />
           </Suspense>
         ) : (
@@ -803,6 +937,8 @@ export default function WashingMachine3D({
             health={health}
             cyclesRemaining={cyclesRemaining}
             isActive={isActive}
+            electricityUsage={electricityUsage}
+            waterUsage={waterUsage}
           />
         )}
 

@@ -19,6 +19,7 @@ export interface ConnectionCallbacks {
   onAudioChunk: (audioData: string, isFirstChunk: boolean) => void;
   onTurnComplete: () => void;
   onStopWash?: (reason?: string) => void;
+  onGetConsumption?: (config: any) => void;
 }
 
 export interface SystemStatus {
@@ -38,7 +39,11 @@ export class GeminiConnectionManager {
   private audioProcessor: AudioProcessor;
   private isConnected: boolean = false;
 
-  constructor(private callbacks: ConnectionCallbacks, private onStopWashCallback?: (reason?: string) => void) {
+  constructor(
+    private callbacks: ConnectionCallbacks,
+    private onStopWashCallback?: (reason?: string) => void,
+    private onGetConsumptionCallback?: (config: any) => void
+  ) {
     this.audioProcessor = new AudioProcessor({
       volume: 0.5,
       attenuationFactor: 0.9,
@@ -130,7 +135,7 @@ export class GeminiConnectionManager {
         onOpen: () => {
           this.isConnected = true;
           this.callbacks.onReady();
-          console.log('Gemini Live connected');
+          // Gemini connected
         },
         onMessage: async (message: any) => {
           await this.handleMessage(message);
@@ -171,6 +176,9 @@ export class GeminiConnectionManager {
    * Handle incoming WebSocket messages
    */
   private async handleMessage(message: any) {
+    // Log all incoming messages for debugging
+    console.log('📥 Received WebSocket message:', Object.keys(message));
+
     // Validate message structure
     const validation = GeminiValidator.validateWebSocketMessage(message);
     if (!validation.isValid) {
@@ -180,7 +188,7 @@ export class GeminiConnectionManager {
 
     // Handle setup completion
     if (message.setup_complete || message.setupComplete) {
-      console.log('✅ Setup complete');
+      // Setup complete
       return;
     }
 
@@ -213,14 +221,9 @@ export class GeminiConnectionManager {
     if (content.audioParts.length > 0) {
       console.log(`🎉 Found ${content.audioParts.length} audio chunk(s)!`);
       content.audioParts.forEach((audioData, index) => {
-        // Validate each audio chunk
-        const audioValidation = this.audioProcessor.validateBase64Audio(audioData);
-        if (audioValidation) {
-          console.log(`🔊 🎵 REAL-TIME AUDIO CHUNK ${index + 1}: ${audioData.length} chars`);
-          this.callbacks.onAudioChunk(audioData, index === 0);
-        } else {
-          console.error(`❌ Invalid audio chunk ${index + 1}, skipping`);
-        }
+        // Temporarily disable audio validation for debugging
+        console.log(`🔊 🎵 REAL-TIME AUDIO CHUNK ${index + 1}: ${audioData.length} chars`);
+        this.callbacks.onAudioChunk(audioData, index === 0);
       });
     }
 
@@ -315,14 +318,15 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
    */
   sendAudio(base64Audio: string): boolean {
     if (!this.isConnected || !this.wsManager?.websocket || this.wsManager.websocket.readyState !== WebSocket.OPEN) {
+      console.log('❌ Cannot send audio - not connected or WebSocket not ready');
       return false;
     }
 
-    // Validate audio data before sending
-    if (!this.audioProcessor.validateBase64Audio(base64Audio)) {
-      console.error('❌ Invalid audio data, not sending');
-      return false;
-    }
+    // Temporarily disable audio validation for debugging
+    // if (!this.audioProcessor.validateBase64Audio(base64Audio)) {
+    //   console.error('❌ Invalid audio data, not sending');
+    //   return false;
+    // }
 
     const audioMessage = {
       realtime_input: {
@@ -335,6 +339,7 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
 
     try {
       this.wsManager.websocket.send(JSON.stringify(audioMessage));
+      console.log('📤 Sent audio chunk:', base64Audio.length, 'characters');
       return true;
     } catch (error) {
       console.error('Error sending audio:', error);

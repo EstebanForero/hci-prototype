@@ -12,9 +12,11 @@ import {
   GetWashStatusParams,
   GetCurrentCyclesParams,
   GetComponentStatesParams,
+  GetConsumptionParams,
   WashStatusResponse,
   CurrentCyclesResponse,
   ComponentStatesResponse,
+  ConsumptionResponse,
   WashConfig
 } from '../types/gemini';
 import { GeminiValidator } from './validation';
@@ -22,6 +24,7 @@ import { GeminiValidator } from './validation';
 export interface ToolExecutionCallbacks {
   onStartWash: (config: WashConfig) => void;
   onStopWash?: (reason?: string) => void;
+  onGetConsumption?: (config: any) => void;
   onToolExecuted?: (toolName: string, result: any) => void;
   onToolError?: (toolName: string, error: string) => void;
 }
@@ -99,6 +102,10 @@ export class ToolExecutionManager {
 
         case 'get_component_states':
           result = await this.executeGetComponentStates(args as GetComponentStatesParams);
+          break;
+
+        case 'get_consumption':
+          result = await this.executeGetConsumption(args);
           break;
 
         default:
@@ -295,8 +302,6 @@ export class ToolExecutionManager {
   private async executeGetComponentStates(params: GetComponentStatesParams): Promise<ComponentStatesResponse> {
     const { component_type } = params;
 
-    console.log(`🔧 Getting component states` + (component_type ? ` (${component_type})` : ' (all)'));
-
     let componentsToShow = this.context.parts;
     if (component_type && component_type !== 'all') {
       componentsToShow = this.context.parts.filter(p =>
@@ -315,6 +320,91 @@ export class ToolExecutionManager {
       total_components: this.context.parts.length,
       healthy_components: this.context.parts.filter(p => p.health > 80).length,
       components_needing_attention: this.context.parts.filter(p => p.health <= 50).length
+    };
+  }
+
+  /**
+   * Execute get consumption command
+   */
+  private async executeGetConsumption(params: any): Promise<ConsumptionResponse> {
+    const { program, temperature, spin_speed, duration, water_level, extra_rinse, pre_wash } = params;
+
+    // Calculate resource usage based on parameters (same logic as in App.tsx)
+    const baseElectricity = {
+      'Quick Wash': 0.5,
+      'Daily': 0.8,
+      'Heavy': 2.0,
+      'Delicate': 0.6,
+      'Eco': 0.4,
+      'Whites': 1.2,
+      'Colors': 0.9,
+      'Sportswear': 0.7,
+      'Normal': 0.8
+    };
+
+    const tempMultiplier = 1 + (temperature - 20) * 0.02;
+    const spinMultiplier = 1 + (spin_speed - 800) * 0.0002;
+    const extraCosts = (extra_rinse ? 0.15 : 0) + (pre_wash ? 0.25 : 0);
+
+    const programName = program || 'Daily';
+    const baseKw = baseElectricity[programName] || 0.8;
+    const electricityKw = Math.round((baseKw * tempMultiplier * spinMultiplier + extraCosts) * 10) / 10;
+
+    const baseWater = {
+      'Quick Wash': 25,
+      'Daily': 45,
+      'Heavy': 80,
+      'Delicate': 40,
+      'Eco': 30,
+      'Whites': 50,
+      'Colors': 45,
+      'Sportswear': 35,
+      'Normal': 45
+    };
+
+    const baseLiters = baseWater[programName] || 45;
+    const waterLevelMultiplier = {
+      'low': 0.7,
+      'medium': 1.0,
+      'high': 1.3
+    };
+
+    const waterLiters = Math.round(
+      baseLiters * waterLevelMultiplier[water_level || 'medium'] +
+      (extra_rinse ? 15 : 0) +
+      (pre_wash ? 20 : 0)
+    );
+
+    // Calculate estimated costs
+    const electricityCostPerKw = 0.15; // Average cost per kWh
+    const waterCostPerLiter = 0.004; // Average cost per liter
+
+    const estimatedElectricityCost = electricityKw * electricityCostPerKw;
+    const estimatedWaterCost = waterLiters * waterCostPerLiter;
+    const totalEstimatedCost = estimatedElectricityCost + estimatedWaterCost;
+
+    return {
+      program: programName,
+      temperature,
+      spin_speed,
+      duration,
+      water_level,
+      extra_rinse,
+      pre_wash,
+      electricity_usage: {
+        kw: electricityKw,
+        estimated_cost: estimatedElectricityCost
+      },
+      water_usage: {
+        liters: waterLiters,
+        estimated_cost: estimatedWaterCost
+      },
+      total_estimated_cost: totalEstimatedCost,
+      efficiency_rating: electricityKw <= 1.0 ? 'High' : electricityKw <= 1.5 ? 'Medium' : 'Low',
+      environmental_impact: {
+        co2_emissions_kg: electricityKw * 0.4, // Approximate CO2 emissions per kWh
+        water_efficiency: waterLiters <= 40 ? 'Excellent' : waterLiters <= 60 ? 'Good' : 'Fair'
+      }
     };
   }
 
@@ -463,12 +553,54 @@ export function createFunctionDeclarations(): any[] {
     }
   };
 
+  const getConsumptionFunction = {
+    name: "get_consumption",
+    description: "Calculate electricity and water consumption for wash settings without starting the wash cycle",
+    parameters: {
+      type: "object",
+      properties: {
+        program: {
+          type: "string",
+          description: "Wash program name",
+          enum: ["Quick Wash", "Daily", "Heavy", "Delicate", "Eco", "Whites", "Colors", "Sportswear", "Normal"]
+        },
+        temperature: {
+          type: "number",
+          description: "Water temperature in Celsius"
+        },
+        spin_speed: {
+          type: "number",
+          description: "Spin speed in RPM"
+        },
+        duration: {
+          type: "number",
+          description: "Duration in minutes"
+        },
+        water_level: {
+          type: "string",
+          description: "Water level setting",
+          enum: ["low", "medium", "high"]
+        },
+        extra_rinse: {
+          type: "boolean",
+          description: "Whether extra rinse is enabled"
+        },
+        pre_wash: {
+          type: "boolean",
+          description: "Whether pre-wash is enabled"
+        }
+      },
+      required: []
+    }
+  };
+
   return [
     startWashFunction,
     stopWashFunction,
     getWashStatusFunction,
     getCurrentCyclesFunction,
-    getComponentStatesFunction
+    getComponentStatesFunction,
+    getConsumptionFunction
   ];
 }
 

@@ -34,6 +34,8 @@ function App() {
   const [totalCycles, setTotalCycles] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState('0:00');
   const [washConfig, setWashConfig] = useState<WashConfiguration | null>(null);
+  const [currentUsage, setCurrentUsage] = useState({ electricityKw: 0, waterLiters: 0 });
+  const [totalUsage, setTotalUsage] = useState({ electricityKw: 0, waterLiters: 0 });
 
   const parts: PartStats[] = [
     { name: "Motor", health: 85, status: 'optimal', cyclesRemaining: 450 },
@@ -46,6 +48,60 @@ function App() {
 
   const overallHealth = Math.round(parts.reduce((sum, part) => sum + part.health, 0) / parts.length);
   const totalCyclesRemaining = parts.reduce((sum, part) => sum + part.cyclesRemaining, 0);
+
+  // Calculate resource usage based on wash configuration
+  const calculateResourceUsage = (config: WashConfiguration) => {
+    // Base electricity consumption (kW) by temperature and program
+    const baseElectricity = {
+      'Quick Wash': 0.5,
+      'Daily': 0.8,
+      'Heavy': 2.0,
+      'Delicate': 0.6,
+      'Eco': 0.4,
+      'Whites': 1.2,
+      'Colors': 0.9,
+      'Sportswear': 0.7
+    };
+
+    // Temperature multiplier (higher temp = more electricity)
+    const tempMultiplier = 1 + (config.temperature - 20) * 0.02;
+
+    // Spin speed multiplier (higher speed = more electricity)
+    const spinMultiplier = 1 + (config.spinSpeed - 800) * 0.0002;
+
+    // Extra options cost
+    const extraCosts = (config.extraRinse ? 0.15 : 0) + (config.preWash ? 0.25 : 0);
+
+    // Calculate electricity usage
+    const programName = config.program || 'Daily';
+    const baseKw = baseElectricity[programName] || 0.8;
+    const electricityKw = baseKw * tempMultiplier * spinMultiplier + extraCosts;
+
+    // Water usage calculation (liters)
+    const baseWater = {
+      'Quick Wash': 25,
+      'Daily': 45,
+      'Heavy': 80,
+      'Delicate': 40,
+      'Eco': 30,
+      'Whites': 50,
+      'Colors': 45,
+      'Sportswear': 35
+    };
+
+    const baseLiters = baseWater[programName] || 45;
+    const waterLevelMultiplier = {
+      'low': 0.7,
+      'medium': 1.0,
+      'high': 1.3
+    };
+
+    const waterLiters = baseLiters * waterLevelMultiplier[config.waterLevel] +
+                       (config.extraRinse ? 15 : 0) +
+                       (config.preWash ? 20 : 0);
+
+    return { electricityKw: Math.round(electricityKw * 10) / 10, waterLiters: Math.round(waterLiters) };
+  };
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -73,25 +129,75 @@ function App() {
   }, [isActive, washConfig]);
 
   const handleStart = () => {
-    if (!washConfig) {
-      setIsConfigOpen(true);
-      return;
-    }
-
-    setIsActive(true);
-    setCurrentCycle(1);
-    setTimeRemaining(`${washConfig.duration}:00`);
+    // Always show settings modal when starting wash
+    setIsConfigOpen(true);
   };
 
   const handleStop = () => {
     setIsActive(false);
     setTimeRemaining('0:00');
+    setCurrentUsage({ electricityKw: 0, waterLiters: 0 });
   };
 
-  
+  const handleGetConsumption = (config: any) => {
+    // Convert AI config format to WashConfiguration format
+    const washConfig: WashConfiguration = {
+      program: config.program || 'Daily',
+      temperature: config.temperature || 40,
+      spinSpeed: config.spin_speed || 1000,
+      duration: config.duration || 60,
+      waterLevel: config.water_level || 'medium',
+      extraRinse: config.extra_rinse || false,
+      preWash: config.pre_wash || false
+    };
+
+    // Calculate resource usage using existing function
+    const usage = calculateResourceUsage(washConfig);
+
+    // Calculate costs and environmental impact
+    const electricityCostPerKw = 0.15; // Average cost per kWh
+    const waterCostPerLiter = 0.004; // Average cost per liter
+
+    const estimatedElectricityCost = usage.electricityKw * electricityCostPerKw;
+    const estimatedWaterCost = usage.waterLiters * waterCostPerLiter;
+    const totalEstimatedCost = estimatedElectricityCost + estimatedWaterCost;
+
+    // Return consumption data in format expected by AI
+    return {
+      program: washConfig.program,
+      temperature: washConfig.temperature,
+      spin_speed: washConfig.spinSpeed,
+      duration: washConfig.duration,
+      water_level: washConfig.waterLevel,
+      extra_rinse: washConfig.extraRinse,
+      pre_wash: washConfig.preWash,
+      electricity_usage: {
+        kw: usage.electricityKw,
+        estimated_cost: Math.round(estimatedElectricityCost * 100) / 100
+      },
+      water_usage: {
+        liters: usage.waterLiters,
+        estimated_cost: Math.round(estimatedWaterCost * 100) / 100
+      },
+      total_estimated_cost: Math.round(totalEstimatedCost * 100) / 100,
+      efficiency_rating: usage.electricityKw <= 1.0 ? 'High' : usage.electricityKw <= 1.5 ? 'Medium' : 'Low',
+      environmental_impact: {
+        co2_emissions_kg: Math.round(usage.electricityKw * 0.4 * 100) / 100,
+        water_efficiency: usage.waterLiters <= 40 ? 'Excellent' : usage.waterLiters <= 60 ? 'Good' : 'Fair'
+      }
+    };
+  };
+
+
   const handleConfigStart = (config: WashConfiguration) => {
     setWashConfig(config);
     setTotalCycles(config.extraRinse ? 2 : 1);
+
+    // Calculate resource usage
+    const usage = calculateResourceUsage(config);
+    setCurrentUsage(usage);
+    setTotalUsage(usage);
+
     setIsActive(true);
     setCurrentCycle(1);
     setTimeRemaining(`${config.duration}:00`);
@@ -175,6 +281,8 @@ function App() {
             health={overallHealth}
             cyclesRemaining={totalCyclesRemaining}
             isActive={isActive}
+            electricityUsage={currentUsage.electricityKw}
+            waterUsage={currentUsage.waterLiters}
             useCustomModel={true}
             modelUrl="/models/washer.glb"
           />
@@ -205,6 +313,7 @@ function App() {
           totalCycles={totalCyclesRemaining}
           onStartWash={handleConfigStart}
           onStopWash={handleStop}
+          onGetConsumption={handleGetConsumption}
           isActive={isActive}
           currentCycle={currentCycle}
           totalCyclesScheduled={totalCycles}

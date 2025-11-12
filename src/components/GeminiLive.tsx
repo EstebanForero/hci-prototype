@@ -30,11 +30,60 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
   totalCycles,
   onStartWash,
   onStopWash,
+  onGetConsumption,
   isActive,
   currentCycle,
   totalCyclesScheduled,
   timeRemaining,
 }) => {
+
+  // Wash configuration presets with costs
+  const washPresets = [
+    {
+      name: "Quick Wash",
+      emoji: "🟢",
+      duration: 15,
+      temperature: 30,
+      spinSpeed: 800,
+      waterLevel: "low" as const,
+      electricityCost: 0.45,
+      waterCost: 25,
+      program: "quick"
+    },
+    {
+      name: "Daily",
+      emoji: "🔵",
+      duration: 30,
+      temperature: 40,
+      spinSpeed: 1000,
+      waterLevel: "medium" as const,
+      electricityCost: 0.85,
+      waterCost: 45,
+      program: "daily"
+    },
+    {
+      name: "Heavy",
+      emoji: "🟡",
+      duration: 90,
+      temperature: 60,
+      spinSpeed: 1200,
+      waterLevel: "high" as const,
+      electricityCost: 2.20,
+      waterCost: 80,
+      program: "heavy"
+    },
+    {
+      name: "Delicate",
+      emoji: "🔴",
+      duration: 45,
+      temperature: 20,
+      spinSpeed: 600,
+      waterLevel: "medium" as const,
+      electricityCost: 0.65,
+      waterCost: 40,
+      program: "delicate"
+    }
+  ];
   // UI State only
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -155,13 +204,11 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
     };
 
     connectionManagerRef.current = new GeminiConnectionManager(connectionCallbacks);
-    console.log('✅ Services initialized');
   }, [addResponse, volume]);
 
   // Connect to Gemini Live
   const connectToGemini = useCallback(async () => {
     if (!connectionManagerRef.current) {
-      console.error('❌ Connection manager not initialized');
       return;
     }
 
@@ -180,11 +227,8 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       parts
     };
 
-    const success = await connectionManagerRef.current.connect(apiKey, systemStatus, onStartWash, onStopWash);
-    if (!success) {
-      console.error('❌ Failed to connect to Gemini');
-    }
-  }, [overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts, onStartWash, onStopWash]);
+    const success = await connectionManagerRef.current.connect(apiKey, systemStatus, onStartWash, onStopWash, onGetConsumption);
+  }, [overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts, onStartWash, onStopWash, onGetConsumption]);
 
   // Initialize services on mount (only once)
   useEffect(() => {
@@ -219,14 +263,15 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         setIsListening(false);
 
         // Send audio stream end signal
-        connectionManagerRef.current.sendAudioStreamEnd();
+        console.log('🛑 Sending audio stream end signal...');
+        const success = connectionManagerRef.current.sendAudioStreamEnd();
+        console.log('📤 Audio stream end sent:', success);
 
         // Clear transcript
         clearTranscript();
 
-        console.log('🎤 Voice input stopped');
+        // Voice input stopped
       } else {
-        console.log('🎤 Starting voice input...');
 
         // Setup audio callbacks
         const audioCallbacks: AudioCallbacks = {
@@ -243,12 +288,14 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         };
 
         // Start recording
+        console.log('🎤 Starting voice recording...');
         const success = await audioServiceRef.current.startRecording(audioCallbacks);
         if (success) {
+          console.log('✅ Voice recording started successfully');
           setIsListening(true);
           clearTranscript();
-          console.log('🎤 ✅ Voice input started');
         } else {
+          console.error('❌ Failed to start voice recording');
           setError('Failed to start voice input');
         }
       }
@@ -346,8 +393,9 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         </motion.div>
       )}
 
+      
       {/* Chat Messages */}
-      <div className="h-64 overflow-y-auto p-4 space-y-2">
+      <div className={`${!isActive && isSDKReady ? 'h-48' : 'h-64'} overflow-y-auto p-4 space-y-2`}>
         <ChatMessages
           responses={responses}
           transcript={transcript}
@@ -356,36 +404,7 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         />
       </div>
 
-      {/* Audio Testing Panel */}
-      <div className="px-4 py-2 border-t border-gray-700/50">
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => connectionManagerRef.current?.playTestTone()}
-            disabled={!isSDKReady}
-            className="px-3 py-1 bg-blue-500/20 rounded text-xs text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50"
-            title="Test basic audio system with 440Hz tone"
-          >
-            🔔 Test Tone
-          </button>
-          <button
-            onClick={() => connectionManagerRef.current?.playTestPCMAudio()}
-            disabled={!isSDKReady}
-            className="px-3 py-1 bg-orange-500/20 rounded text-xs text-orange-400 hover:bg-orange-500/30 transition-colors disabled:opacity-50"
-            title="Test PCM audio playback (simulates Gemini)"
-          >
-            🧪 Test PCM
-          </button>
-          <button
-            onClick={() => connectionManagerRef.current?.playTestWAV()}
-            disabled={!isSDKReady}
-            className="px-3 py-1 bg-green-500/20 rounded text-xs text-green-400 hover:bg-green-500/30 transition-colors disabled:opacity-50"
-            title="Play test_complete_response.wav file"
-          >
-            🎵 Test WAV
-          </button>
-        </div>
-      </div>
-
+  
       {/* Voice Level Indicator */}
       {isListening && (
         <div className="px-4 py-2">
