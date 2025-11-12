@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, Suspense } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Box, Text, Cylinder } from '@react-three/drei';
 import * as THREE from 'three';
@@ -7,6 +7,327 @@ interface WashingMachineProps {
   health: number;
   cyclesRemaining: number;
   isActive: boolean;
+  useCustomModel?: boolean;
+  modelUrl?: string;
+}
+
+// Water Particle System - Confined spherical rotation
+function WaterParticles({ isActive }: { isActive: boolean }) {
+  const particlesRef = useRef<THREE.Group>(null);
+  const particleCount = 100;
+
+  useFrame((state) => {
+    if (particlesRef.current && isActive) {
+      const time = state.clock.elapsedTime;
+
+      particlesRef.current.children.forEach((particle, i) => {
+        // Spherical coordinates - much smaller radius
+        const theta = (i / particleCount) * Math.PI * 2 + time * 0.8;
+        const phi = Math.acos(1 - 2 * (i / particleCount)) + time * 0.3;
+        const radius = 0.12 + Math.sin(time * 2 + i * 0.1) * 0.03; // Reduced by ~5x
+
+        // Convert spherical to Cartesian coordinates
+        particle.position.x = radius * Math.sin(phi) * Math.cos(theta);
+        particle.position.y = radius * Math.cos(phi) * 0.6; // Flatten sphere
+        particle.position.z = radius * Math.sin(phi) * Math.sin(theta);
+
+        // Individual particle rotation
+        particle.rotation.x += 0.03;
+        particle.rotation.y += 0.02;
+
+        // Pulsing effect
+        const scale = 0.008 + Math.sin(time * 4 + i * 0.2) * 0.004;
+        particle.scale.setScalar(scale);
+      });
+    }
+  });
+
+  return (
+    <group ref={particlesRef} visible={isActive}>
+      {Array.from({ length: particleCount }).map((_, i) => (
+        <mesh key={`water-${i}`}>
+          <sphereGeometry args={[0.008, 4, 4]} />
+          <meshStandardMaterial
+            color="#3b82f6"
+            transparent
+            opacity={0.6}
+            roughness={0.1}
+            metalness={0.3}
+            emissive="#1e40af"
+            emissiveIntensity={0.4}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// Bubble System for water effect - Confined space
+function BubbleSystem({ isActive }: { isActive: boolean }) {
+  const bubblesRef = useRef<THREE.Group>(null);
+  const bubbleCount = 30;
+
+  useFrame((state) => {
+    if (bubblesRef.current && isActive) {
+      const time = state.clock.elapsedTime;
+
+      bubblesRef.current.children.forEach((bubble, i) => {
+        // Rising bubbles - slower and confined
+        bubble.position.y += 0.003;
+        bubble.position.x += Math.sin(time * 2 + i) * 0.0005;
+        bubble.position.z += Math.cos(time * 2 + i) * 0.0005;
+
+        // Reset bubble when it reaches top - much smaller range
+        if (bubble.position.y > 0.3) {
+          bubble.position.y = -0.2;
+          bubble.position.x = (Math.random() - 0.5) * 0.15;
+          bubble.position.z = (Math.random() - 0.5) * 0.15;
+        }
+
+        // Bubble wobbling - smaller
+        bubble.scale.setScalar(0.005 + Math.sin(time * 5 + i) * 0.002);
+      });
+    }
+  });
+
+  return (
+    <group ref={bubblesRef} visible={isActive}>
+      {Array.from({ length: bubbleCount }).map((_, i) => (
+        <mesh
+          key={`bubble-${i}`}
+          position={[
+            (Math.random() - 0.5) * 0.15, // Much smaller initial spread
+            -0.2 + Math.random() * 0.5,   // Smaller height range
+            (Math.random() - 0.5) * 0.15
+          ]}
+        >
+          <sphereGeometry args={[0.005, 3, 3]} />
+          <meshStandardMaterial
+            color="#dbeafe"
+            transparent
+            opacity={0.3}
+            roughness={0.2}
+            metalness={0.1}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// GLB Model Loader Component
+function GLBModel({ url, health, cyclesRemaining, isActive }: { url: string, health: number, cyclesRemaining: number, isActive: boolean }) {
+  const meshRef = useRef<THREE.Group>(null);
+  const [model, setModel] = useState<THREE.Group | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadModel = async () => {
+      try {
+        // Dynamic import to avoid SSR issues
+        const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader');
+        const loader = new GLTFLoader();
+
+        loader.load(
+          url,
+          (gltf: any) => {
+            // Optimize the loaded model
+            gltf.scene.traverse((child: any) => {
+              if (child instanceof THREE.Mesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+                child.frustumCulled = true;
+
+                // Enable interaction for parts
+                child.userData.isInteractive = true;
+
+                // Optimize materials
+                if (child.material) {
+                  child.material.envMapIntensity = 1.0;
+                  child.material.needsUpdate = true;
+                }
+              }
+            });
+
+            // Auto-scale and center the model
+            const box = new THREE.Box3().setFromObject(gltf.scene);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+
+            // Scale to fit in 2x2x2 space
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = 2 / maxDim;
+
+            gltf.scene.position.sub(center); // Center the model
+            gltf.scene.scale.setScalar(scale);
+
+            setModel(gltf.scene);
+            setLoading(false);
+            console.log(`Model loaded: ${Math.round((size.x * size.y * size.z) * 1000)} cubic units`);
+          },
+          (progress: any) => {
+            const percent = (progress.loaded / progress.total) * 100;
+            setLoadingProgress(percent);
+          },
+          (error: any) => {
+            console.error('Error loading GLB model:', error);
+            setError(error instanceof Error ? error.message : 'Unknown error');
+            setLoading(false);
+          }
+        );
+      } catch (err) {
+        console.error('Failed to load GLTFLoader:', err);
+        setError('Failed to initialize model loader');
+        setLoading(false);
+      }
+    };
+
+    loadModel();
+  }, [url]);
+
+  // Animate the model
+  useFrame((state, delta) => {
+    if (meshRef.current && model) {
+      // Gentle rotation when active
+      if (isActive) {
+        meshRef.current.rotation.y += delta * 0.1;
+      }
+
+      // Find and animate drum-like components
+      model.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.name.toLowerCase().includes('drum')) {
+          if (isActive) {
+            child.rotation.x += delta * 2;
+          }
+        }
+      });
+    }
+  });
+
+  if (error) {
+    return (
+      <group>
+        <mesh>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color="red" />
+        </mesh>
+        <Text position={[0, 1.5, 0]} color="white" fontSize={0.1}>
+          Model Error: {error}
+        </Text>
+      </group>
+    );
+  }
+
+  if (loading) {
+    return (
+      <group>
+        {/* Loading placeholder */}
+        <mesh>
+          <cylinderGeometry args={[0.8, 0.8, 1.2, 32]} />
+          <meshStandardMaterial
+            color="#374151"
+            transparent
+            opacity={0.8}
+            roughness={0.3}
+            metalness={0.7}
+          />
+        </mesh>
+
+        {/* Animated loading indicator */}
+        <group position={[0, 0.7, 0]}>
+          <mesh rotation={[Date.now() * 0.001, 0, 0]}>
+            <torusGeometry args={[0.3, 0.05, 8, 20]} />
+            <meshStandardMaterial
+              color="#3b82f6"
+              emissive="#3b82f6"
+              emissiveIntensity={0.5}
+            />
+          </mesh>
+        </group>
+
+        {/* Progress text */}
+        <Text position={[0, 1.2, 0]} color="white" fontSize={0.1}>
+          Loading: {Math.round(loadingProgress)}%
+        </Text>
+        <Text position={[0, 1.0, 0]} color="#94a3b8" fontSize={0.08}>
+          30MB Model - Please Wait
+        </Text>
+      </group>
+    );
+  }
+
+  return (
+    <group ref={meshRef}>
+      {model && (
+        <>
+          <primitive object={model.clone()} />
+
+          {/* Water effects inside the washer */}
+          <group position={[0, 0, 0]}>
+            <WaterParticles isActive={isActive} />
+            <BubbleSystem isActive={isActive} />
+          </group>
+
+          {/* Add health indicator */}
+          <CameraFacingText
+            position={[-2.5, 1.5, 0]}
+            color={health > 70 ? '#4ade80' : health > 40 ? '#fbbf24' : '#ef4444'}
+            fontSize={0.18}
+          >
+            {`Health: ${health}%`}
+          </CameraFacingText>
+
+          {/* Add cycles indicator */}
+          <CameraFacingText
+            position={[2.5, 1.5, 0]}
+            color="#60a5fa"
+            fontSize={0.18}
+          >
+            {`Cycles: ${cyclesRemaining}`}
+          </CameraFacingText>
+
+          {/* Status light */}
+          <mesh position={[1.5, 1.0, 0]}>
+            <sphereGeometry args={[0.05, 16, 16]} />
+            <meshStandardMaterial
+              color={isActive ? '#4ade80' : '#ef4444'}
+              emissive={isActive ? '#4ade80' : '#ef4444'}
+              emissiveIntensity={0.8}
+            />
+          </mesh>
+
+          {/* Active state particles */}
+          {isActive && (
+            <group>
+              {[...Array(6)].map((_, i) => {
+                const time = Date.now() * 0.001;
+                const angle = (i / 6) * Math.PI * 2;
+                return (
+                  <mesh
+                    key={i}
+                    position={[
+                      Math.cos(angle + time * 0.8) * 2,
+                      Math.sin(time + i * 0.5) * 0.3 + 0.5,
+                      Math.sin(angle + time * 0.6) * 2
+                    ]}
+                  >
+                    <sphereGeometry args={[0.02, 8, 8]} />
+                    <meshStandardMaterial
+                      color="#60a5fa"
+                      emissive="#60a5fa"
+                      emissiveIntensity={1.0}
+                    />
+                  </mesh>
+                );
+              })}
+            </group>
+          )}
+        </>
+      )}
+    </group>
+  );
 }
 
 function CameraFacingText({ children, position, color = "white", fontSize = 0.15 }: any) {
@@ -384,6 +705,14 @@ function WashingMachineModel({ health, cyclesRemaining, isActive }: WashingMachi
         </CameraFacingText>
       )}
 
+      {/* Water Effects when active - Inside the drum */}
+      {isActive && (
+        <group position={[0, 0.1, 0]}>
+          <WaterParticles isActive={true} />
+          <BubbleSystem isActive={true} />
+        </group>
+      )}
+
       {/* Energy Particles when active - Now positioned around the drum */}
       {isActive && (
         <group>
@@ -414,7 +743,13 @@ function WashingMachineModel({ health, cyclesRemaining, isActive }: WashingMachi
   );
 }
 
-export default function WashingMachine3D({ health, cyclesRemaining, isActive }: WashingMachineProps) {
+export default function WashingMachine3D({
+  health,
+  cyclesRemaining,
+  isActive,
+  useCustomModel = false,
+  modelUrl = '/models/washer.glb'
+}: WashingMachineProps) {
   return (
     <div className="w-full h-full">
       <Canvas
@@ -453,11 +788,23 @@ export default function WashingMachine3D({ health, cyclesRemaining, isActive }: 
           />
         </mesh>
 
-        <WashingMachineModel
-          health={health}
-          cyclesRemaining={cyclesRemaining}
-          isActive={isActive}
-        />
+        {/* Choose between procedural and GLB model */}
+        {useCustomModel ? (
+          <Suspense fallback={<LoadingPlaceholder />}>
+            <GLBModel
+              url={modelUrl}
+              health={health}
+              cyclesRemaining={cyclesRemaining}
+              isActive={isActive}
+            />
+          </Suspense>
+        ) : (
+          <WashingMachineModel
+            health={health}
+            cyclesRemaining={cyclesRemaining}
+            isActive={isActive}
+          />
+        )}
 
         <OrbitControls
           enablePan={false}
@@ -475,5 +822,36 @@ export default function WashingMachine3D({ health, cyclesRemaining, isActive }: 
         />
       </Canvas>
     </div>
+  );
+}
+
+// Loading placeholder for Suspense
+function LoadingPlaceholder() {
+  return (
+    <group>
+      <mesh>
+        <cylinderGeometry args={[0.8, 0.8, 1.2, 32]} />
+        <meshStandardMaterial
+          color="#374151"
+          transparent
+          opacity={0.8}
+          roughness={0.3}
+          metalness={0.7}
+        />
+      </mesh>
+      <group position={[0, 0.7, 0]}>
+        <mesh rotation={[Date.now() * 0.001, 0, 0]}>
+          <torusGeometry args={[0.3, 0.05, 8, 20]} />
+          <meshStandardMaterial
+            color="#3b82f6"
+            emissive="#3b82f6"
+            emissiveIntensity={0.5}
+          />
+        </mesh>
+      </group>
+      <Text position={[0, 1.2, 0]} color="white" fontSize={0.1}>
+        Loading Model...
+      </Text>
+    </group>
   );
 }

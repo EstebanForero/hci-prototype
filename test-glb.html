@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GLB Model Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .success { background: #10b981; }
+        .error { background: #ef4444; }
+        .warning { background: #f59e0b; }
+        .info { background: #3b82f6; }
+        pre {
+            background: #374151;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>🧪 GLB Model Test</h1>
+
+        <div id="status" class="status info">Testing GLB model...</div>
+
+        <h2>File Information</h2>
+        <div id="file-info"></div>
+
+        <h2>Loading Test</h2>
+        <div id="loading-test"></div>
+
+        <h2>Model Preview</h2>
+        <canvas id="preview" style="width: 100%; height: 400px; background: #2a2a2a; border-radius: 8px;"></canvas>
+
+        <h2>Console Output</h2>
+        <pre id="console-output"></pre>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        const statusEl = document.getElementById('status');
+        const fileInfoEl = document.getElementById('file-info');
+        const loadingTestEl = document.getElementById('loading-test');
+        const consoleEl = document.getElementById('console-output');
+
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            consoleEl.textContent += `[${timestamp}] ${type.toUpperCase()}: ${message}\n`;
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        function updateStatus(message, type) {
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        async function testGLBModel() {
+            try {
+                log('Starting GLB model test...');
+                updateStatus('Testing GLB model...', 'info');
+
+                // Test 1: File accessibility
+                log('Testing file accessibility...');
+                const response = await fetch('/models/washer.glb', { method: 'HEAD' });
+
+                if (response.ok) {
+                    const size = response.headers.get('content-length');
+                    const type = response.headers.get('content-type');
+
+                    fileInfoEl.innerHTML = `
+                        <div class="status success">✅ File is accessible</div>
+                        <p><strong>Size:</strong> ${size ? (parseInt(size) / 1024 / 1024).toFixed(2) + ' MB' : 'Unknown'}</p>
+                        <p><strong>Type:</strong> ${type || 'Unknown'}</p>
+                        <p><strong>URL:</strong> /models/washer.glb</p>
+                    `;
+                    log(`File accessible - Size: ${size ? (parseInt(size) / 1024 / 1024).toFixed(2) + ' MB' : 'Unknown'}`);
+                } else {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                // Test 2: Three.js loading
+                log('Testing Three.js GLTF loading...');
+                updateStatus('Loading model...', 'warning');
+
+                const loader = new GLTFLoader();
+                const gltf = await new Promise((resolve, reject) => {
+                    loader.load(
+                        '/models/washer.glb',
+                        resolve,
+                        (progress) => {
+                            const percent = (progress.loaded / progress.total) * 100;
+                            log(`Loading progress: ${percent.toFixed(1)}%`);
+                            loadingTestEl.innerHTML = `<div class="status warning">Loading: ${percent.toFixed(1)}%</div>`;
+                        },
+                        reject
+                    );
+                });
+
+                // Test 3: Model validation
+                log('Validating loaded model...');
+                const scene = gltf.scene;
+                const box = new THREE.Box3().setFromObject(scene);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+
+                let meshCount = 0;
+                let triangleCount = 0;
+                scene.traverse((child) => {
+                    if (child instanceof THREE.Mesh) {
+                        meshCount++;
+                        if (child.geometry) {
+                            const geometry = child.geometry;
+                            if (geometry.index) {
+                                triangleCount += geometry.index.count / 3;
+                            } else {
+                                triangleCount += geometry.attributes.position.count / 3;
+                            }
+                        }
+                    }
+                });
+
+                loadingTestEl.innerHTML = `
+                    <div class="status success">✅ Model loaded successfully</div>
+                    <p><strong>Meshes:</strong> ${meshCount}</p>
+                    <p><strong>Triangles:</strong> ${triangleCount.toLocaleString()}</p>
+                    <p><strong>Dimensions:</strong> ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)}</p>
+                    <p><strong>Center:</strong> ${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}</p>
+                `;
+
+                log(`Model loaded - Meshes: ${meshCount}, Triangles: ${triangleCount.toLocaleString()}`);
+                log(`Model dimensions: ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)}`);
+
+                // Test 4: Preview rendering
+                log('Setting up preview scene...');
+                updateStatus('Rendering preview...', 'success');
+
+                const canvas = document.getElementById('preview');
+                const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+                renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+                const scene_preview = new THREE.Scene();
+                scene_preview.background = new THREE.Color(0x1a1a1a);
+                scene_preview.add(gltf.scene);
+
+                // Auto-scale and center
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 3 / maxDim;
+                gltf.scene.scale.setScalar(scale);
+                gltf.scene.position.sub(center.multiplyScalar(scale));
+
+                // Camera
+                const camera = new THREE.PerspectiveCamera(
+                    45,
+                    canvas.clientWidth / canvas.clientHeight,
+                    0.1,
+                    1000
+                );
+                camera.position.set(5, 3, 8);
+                camera.lookAt(0, 0, 0);
+
+                // Lighting
+                const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
+                scene_preview.add(ambientLight);
+
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 2.5);
+                directionalLight.position.set(8, 12, 8);
+                directionalLight.castShadow = true;
+                scene_preview.add(directionalLight);
+
+                const pointLight = new THREE.PointLight(0x60a5fa, 1.5);
+                pointLight.position.set(4, 6, 4);
+                scene_preview.add(pointLight);
+
+                // Controls
+                const controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.minDistance = 3;
+                controls.maxDistance = 20;
+
+                // Animation loop
+                function animate() {
+                    requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene_preview, camera);
+                }
+                animate();
+
+                updateStatus('✅ GLB model test completed successfully!', 'success');
+                log('GLB model test completed successfully!');
+
+                // Handle resize
+                window.addEventListener('resize', () => {
+                    camera.aspect = canvas.clientWidth / canvas.clientHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+                });
+
+            } catch (error) {
+                log(`Error: ${error.message}`, 'error');
+                updateStatus(`❌ Error: ${error.message}`, 'error');
+                loadingTestEl.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Start test
+        testGLBModel();
+    </script>
+</body>
+</html>

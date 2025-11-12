@@ -2,9 +2,9 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import WashingMachine3D from "./components/WashingMachine3D";
 import StatsDisplay from "./components/StatsDisplay";
-import ControlPanel from "./components/ControlPanel";
 import WashConfig from "./components/WashConfig";
 import GeminiLive from "./components/GeminiLive";
+import SidebarLayout from "./components/SidebarLayout";
 import "./App.css";
 
 interface WashConfiguration {
@@ -88,10 +88,7 @@ function App() {
     setTimeRemaining('0:00');
   };
 
-  const handleSettings = () => {
-    setIsConfigOpen(true);
-  };
-
+  
   const handleConfigStart = (config: WashConfiguration) => {
     setWashConfig(config);
     setTotalCycles(config.extraRinse ? 2 : 1);
@@ -100,54 +97,18 @@ function App() {
     setTimeRemaining(`${config.duration}:00`);
   };
 
-  const handleQuickWash = (programName: string) => {
-    const programConfigs: Record<string, WashConfiguration> = {
-      'Quick Wash': {
-        program: 'quick',
-        temperature: 40,
-        spinSpeed: 1200,
-        duration: 30,
-        waterLevel: 'medium',
-        extraRinse: false,
-        preWash: false,
-      },
-      'Delicate': {
-        program: 'delicate',
-        temperature: 30,
-        spinSpeed: 800,
-        duration: 60,
-        waterLevel: 'low',
-        extraRinse: false,
-        preWash: false,
-      },
-      'Heavy Duty': {
-        program: 'heavy',
-        temperature: 90,
-        spinSpeed: 1400,
-        duration: 120,
-        waterLevel: 'high',
-        extraRinse: true,
-        preWash: true,
-      },
-      'Eco Mode': {
-        program: 'eco',
-        temperature: 40,
-        spinSpeed: 1000,
-        duration: 150,
-        waterLevel: 'low',
-        extraRinse: false,
-        preWash: false,
-      },
-    };
-
-    const config = programConfigs[programName];
-    if (config) {
-      handleConfigStart(config);
-    }
-  };
-
+  
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white overflow-hidden">
+    <SidebarLayout
+      isActive={isActive}
+      health={overallHealth}
+      cyclesRemaining={totalCyclesRemaining}
+      timeRemaining={timeRemaining}
+      onStartWash={handleStart}
+      onStopWash={handleStop}
+      washConfig={washConfig}
+    >
+      <div className="h-full flex flex-col">
       {/* Background Effects */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse" />
@@ -214,6 +175,8 @@ function App() {
             health={overallHealth}
             cyclesRemaining={totalCyclesRemaining}
             isActive={isActive}
+            useCustomModel={true}
+            modelUrl="/models/washer.glb"
           />
         </div>
 
@@ -225,21 +188,7 @@ function App() {
           isActive={isActive}
         />
 
-        {/* Control Panel */}
-        <ControlPanel
-          isActive={isActive}
-          onStart={handleStart}
-          onStop={handleStop}
-          onSettings={handleSettings}
-          onQuickWash={handleQuickWash}
-          currentCycle={currentCycle}
-          totalCycles={totalCycles}
-          timeRemaining={timeRemaining}
-        />
-
-        {/* Spacer for fixed control panel */}
-        <div className="h-32" />
-      </div>
+              </div>
 
       {/* Configuration Modal */}
       <WashConfig
@@ -364,7 +313,8 @@ function App() {
           </motion.div>
         </motion.div>
       )}
-    </div>
+      </div>
+    </SidebarLayout>
   );
 }
 
