@@ -1,14 +1,20 @@
 /**
- * Custom hook for managing audio recording functionality
+ * Simple Audio Recording Hook for Gemini Live
+ * Handles microphone capture and audio level visualization
  */
 
-import { useState, useCallback, useRef } from 'react';
-import { AudioStreamRef, AudioLevelCallback } from '../utils/audioUtils';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { resampleTo16kHz } from '../utils/audioCapture';
 
 interface AudioRecordingState {
   isRecording: boolean;
   audioLevel: number;
   isProcessing: boolean;
+}
+
+interface AudioRecordingCallbacks {
+  onAudioData: (base64Audio: string) => void;
+  onAudioLevel: (level: number) => void;
 }
 
 export function useAudioRecording() {
@@ -18,45 +24,44 @@ export function useAudioRecording() {
     isProcessing: false
   });
 
-  const audioStreamRef = useRef<AudioStreamRef>({
-    buffer: [],
-    isPlaying: false,
-    scheduleTimeout: null,
-    nextPlayTime: null,
-    hasStarted: false
-  });
-
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | MediaRecorder | null>(null);
-  const websocketRef = useRef<WebSocket | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const callbacksRef = useRef<AudioRecordingCallbacks | null>(null);
+
+  const setAudioLevel = useCallback((level: number) => {
+    setRecordingState(prev => ({ ...prev, audioLevel: level }));
+  }, []);
 
   const setRecording = useCallback((isRecording: boolean) => {
     setRecordingState(prev => ({ ...prev, isRecording }));
-  }, []);
-
-  const setAudioLevel = useCallback((audioLevel: number) => {
-    setRecordingState(prev => ({ ...prev, audioLevel }));
   }, []);
 
   const setProcessing = useCallback((isProcessing: boolean) => {
     setRecordingState(prev => ({ ...prev, isProcessing }));
   }, []);
 
-  const setWebSocketRef = useCallback((websocket: WebSocket | null) => {
-    websocketRef.current = websocket;
-  }, []);
-
+  // Setup audio recording with proper Gemini Live format
   const setupAudioRecording = useCallback(async (
     audioContext: AudioContext,
-    onAudioLevel: AudioLevelCallback,
+    callbacks: AudioRecordingCallbacks,
     debugLogsEnabled: boolean = false
   ): Promise<boolean> => {
     try {
-      console.log('🎤 Setting up audio recording...');
+      console.log('🎤 Setting up audio recording for Gemini Live...');
+      console.log('🎤 Audio context state:', audioContext.state);
+      console.log('🎤 Audio context sample rate:', audioContext.sampleRate);
+      console.log('🎤 Target rate: 16kHz (16000 Hz) input to Gemini');
 
-      // Check if audio context is valid
-      if (!audioContext || audioContext.state === 'closed') {
-        console.log('🔊 Audio context not available for recording');
+      if (!audioContext) {
+        console.error('❌ Audio context not provided');
+        return false;
+      }
+
+      if (audioContext.state === 'closed') {
+        console.error('❌ Audio context is closed, a new one should be created');
+        console.error('❌ Audio context object:', audioContext);
         return false;
       }
 
@@ -64,181 +69,178 @@ export function useAudioRecording() {
       if (audioContext.state === 'suspended') {
         console.log('🔊 Resuming suspended audio context...');
         await audioContext.resume();
+        console.log('🔊 Audio context resumed, new state:', audioContext.state);
       }
 
+      // Store callbacks
+      callbacksRef.current = callbacks;
+
+      // Get microphone access with Gemini Live compatible settings
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000
+          sampleRate: 16000  // Gemini Live expects 16kHz
         }
       });
 
-      console.log('🎤 Got media stream:', stream.getAudioTracks().length, 'tracks');
+      console.log('🎤 Got microphone stream');
       mediaStreamRef.current = stream;
 
-      if (websocketRef.current?.readyState === WebSocket.OPEN) {
-        console.log('🎤 Setting up direct PCM audio capture...');
+      // Create audio processing pipeline
+      const source = audioContext.createMediaStreamSource(stream);
+      sourceRef.current = source;
 
-        // Create a script processor for real-time PCM conversion
-        const bufferSize = 4096;
-        const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
-        processorRef.current = processor;
+      // Create script processor for real-time audio processing
+      const bufferSize = 4096;  // 256ms of audio at 16kHz
+      const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+      processorRef.current = processor;
 
-        let audioChunkCounter = 0;
-        let isListeningRef = false;
+      let chunkCounter = 0;
 
-        // Create source from the microphone stream
-        const source = audioContext.createMediaStreamSource(stream);
+      processor.onaudioprocess = (event) => {
+        if (!callbacksRef.current) return;
 
-        processor.onaudioprocess = (event) => {
-          // Get raw audio data
-          const inputData = event.inputBuffer.getChannelData(0);
+        const inputBuffer = event.inputBuffer;
+        const inputData = inputBuffer.getChannelData(0);
 
-          // Calculate audio level for visualization
-          let sum = 0;
-          let maxSample = 0;
-          for (let i = 0; i < inputData.length; i++) {
-            const abs = Math.abs(inputData[i]);
-            sum += abs;
-            maxSample = Math.max(maxSample, abs);
-          }
-          const average = sum / inputData.length;
-          const level = Math.min(100, average * 1000);
-          setAudioLevel(level);
-          onAudioLevel(level);
+        // Calculate audio level for visualization
+        let sum = 0;
+        let maxSample = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          const abs = Math.abs(inputData[i]);
+          sum += abs;
+          maxSample = Math.max(maxSample, abs);
+        }
 
-          // Only send to WebSocket if we're listening and connected
-          if (!isListeningRef || websocketRef.current?.readyState !== WebSocket.OPEN) {
-            return;
-          }
+        const average = sum / inputData.length;
+        const level = Math.min(100, average * 1000); // Scale for visualization
 
-          // Debug logging - only log occasionally to avoid spam
-          if (debugLogsEnabled && (audioChunkCounter < 10 || audioChunkCounter % 100 === 0)) {
-            console.log(`🎤 PCM chunk #${audioChunkCounter}: level=${level.toFixed(2)}, max=${maxSample.toFixed(4)}`);
-          }
+        // Update audio level
+        setAudioLevel(level);
+        callbacksRef.current.onAudioLevel(level);
 
-          // Convert float32 to 16-bit PCM
-          const pcmData = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32767));
-          }
+        // Debug logging for first few chunks
+        if (debugLogsEnabled && chunkCounter < 3) {
+          console.log(`🎤 Audio chunk #${chunkCounter}: level=${level.toFixed(1)}, max=${maxSample.toFixed(4)}`);
+        }
 
-          // Convert to base64
-          const uint8Array = new Uint8Array(pcmData.buffer);
-          const base64Data = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
+        // Resample audio to 16kHz for Gemini Live
+        const resampledData = resampleTo16kHz(inputData, audioContext.sampleRate);
 
-          // Send to Gemini
-          const audioMessage = {
-            realtime_input: {
-              audio: {
-                data: base64Data,
-                mimeType: "audio/pcm;rate=48000"  // Use the actual sample rate
-              }
-            }
-          };
+        // Convert Float32Array to 16-bit PCM (required by Gemini Live)
+        const pcmData = new Int16Array(resampledData.length);
+        for (let i = 0; i < resampledData.length; i++) {
+          pcmData[i] = Math.max(-32768, Math.min(32767, resampledData[i] * 32767));
+        }
 
-          audioChunkCounter++;
+        // Convert PCM to base64
+        const bytes = new Uint8Array(pcmData.buffer);
+        const base64Audio = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
 
-          try {
-            websocketRef.current.send(JSON.stringify(audioMessage));
-            if (debugLogsEnabled && audioChunkCounter < 5) {
-              console.log(`🎤 📤 Sent PCM chunk #${audioChunkCounter}: ${pcmData.length} samples`);
-            }
-          } catch (error) {
-            console.error('🎤 Error sending PCM audio:', error);
-          }
-        };
+        // Send audio data via callback
+        callbacksRef.current.onAudioData(base64Audio);
 
-        // Connect the audio nodes - CRITICAL: Connect to destination to make processor work
-        source.connect(processor);
-        processor.connect(audioContext.destination); // This forces the processor to run!
+        chunkCounter++;
+      };
 
-        console.log('🎤 Connected source -> processor -> destination');
-        console.log('🎤 PCM capture setup complete');
-        console.log('🎤 Audio context sample rate:', audioContext.sampleRate);
-        console.log('🎤 Microphone is now capturing raw PCM audio...');
-        console.log('🎤 WARNING: You may hear echo - this is normal and required for processing');
+      // Connect audio nodes: source -> processor -> destination
+      // Note: We connect to destination to ensure the processor runs
+      source.connect(processor);
+      processor.connect(audioContext.destination);
 
-        // Store the isListening reference for the processor
-        isListeningRef = true;
-      }
+      console.log('🎤 Audio recording setup complete');
+      console.log(`🎤 Sample rate: ${audioContext.sampleRate}Hz`);
+      console.log(`🎤 Buffer size: ${bufferSize} samples`);
+      console.log('🎤 Ready to capture audio');
 
-      setRecording(true);
       return true;
 
     } catch (error) {
-      console.error('Error setting up audio recording:', error);
-      setRecording(false);
+      console.error('❌ Error setting up audio recording:', error);
       return false;
     }
-  }, [setAudioLevel, setRecording]);
+  }, [setAudioLevel]);
 
-  const stopAudioRecording = useCallback(() => {
-    console.log('🛑 Stopping audio recording');
-
-    if (processorRef.current) {
-      // Handle both MediaRecorder and ScriptProcessorNode
-      const processor = processorRef.current;
-      if ('stop' in processor) {
-        // MediaRecorder
-        try {
-          (processor as MediaRecorder).stop();
-        } catch (e) {
-          console.log('MediaRecorder already stopped');
-        }
-      } else if ('disconnect' in processor) {
-        // ScriptProcessorNode
-        try {
-          (processor as ScriptProcessorNode).disconnect();
-        } catch (e) {
-          console.log('ScriptProcessor already disconnected');
-        }
-      }
-      processorRef.current = null;
+  // Start recording
+  const startListening = useCallback(async (
+    audioContext: AudioContext,
+    callbacks: AudioRecordingCallbacks,
+    debugLogsEnabled: boolean = false
+  ): Promise<boolean> => {
+    if (recordingState.isRecording) {
+      console.log('🎤 Already recording');
+      return true;
     }
 
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
+    console.log('🎤 Starting audio capture...');
+    setProcessing(true);
+
+    const success = await setupAudioRecording(audioContext, callbacks, debugLogsEnabled);
+
+    if (success) {
+      setRecording(true);
+      console.log('🎤 ✅ Audio capture started');
+    } else {
+      setProcessing(false);
+      console.error('❌ Failed to start audio capture');
+    }
+
+    setProcessing(false);
+    return success;
+  }, [recordingState.isRecording, setupAudioRecording, setRecording, setProcessing]);
+
+  // Stop recording
+  const stopListening = useCallback(() => {
+    if (!recordingState.isRecording) {
+      console.log('🎤 Not currently recording');
+      return;
+    }
+
+    console.log('🛑 Stopping audio capture...');
+
+    try {
+      // Disconnect processor
+      if (processorRef.current) {
+        processorRef.current.disconnect();
+        processorRef.current = null;
+      }
+
+      // Disconnect source
+      if (sourceRef.current) {
+        sourceRef.current.disconnect();
+        sourceRef.current = null;
+      }
+
+      // Stop media stream
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(track => {
+          track.stop();
+        });
+        mediaStreamRef.current = null;
+      }
+
+      console.log('🎤 ✅ Audio capture stopped');
+    } catch (error) {
+      console.error('❌ Error stopping audio capture:', error);
     }
 
     setRecording(false);
     setAudioLevel(0);
-  }, [setRecording, setAudioLevel]);
+  }, [recordingState.isRecording, setRecording, setAudioLevel]);
 
-  const startListening = useCallback(() => {
-    setRecording(true);
-  }, [setRecording]);
-
-  const stopListening = useCallback(() => {
-    setRecording(false);
-    stopAudioRecording();
-  }, [setRecording, stopAudioRecording]);
-
-  const cleanup = useCallback(() => {
-    stopAudioRecording();
-    setRecordingState({
-      isRecording: false,
-      audioLevel: 0,
-      isProcessing: false
-    });
-  }, [stopAudioRecording]);
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopListening();
+    };
+  }, [stopListening]);
 
   return {
     recordingState,
-    audioStreamRef,
-    mediaStreamRef,
-    processorRef,
-    setWebSocketRef,
-    setupAudioRecording,
     startListening,
     stopListening,
-    stopAudioRecording,
-    setRecording,
-    setAudioLevel,
-    setProcessing,
-    cleanup
+    setAudioLevel
   };
 }

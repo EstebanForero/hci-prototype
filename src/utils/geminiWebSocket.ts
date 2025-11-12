@@ -38,6 +38,9 @@ export class GeminiWebSocketManager {
   private config: GeminiConnectionConfig;
   private state: WebSocketState;
   private debugLogsEnabled: boolean;
+  private reconnectAttempts: number = 0;
+  private audioQueue: string[] = [];
+  private isConnectedAndReady: boolean = false;
 
   constructor(callbacks: WebSocketCallbacks, config: GeminiConnectionConfig) {
     this.callbacks = callbacks;
@@ -103,13 +106,24 @@ export class GeminiWebSocketManager {
         },
         tools: [{
           function_declarations: functionDeclarations || []
-        }]
+        }],
+        // Enable automatic VAD for continuous audio processing
+        realtime_input_config: {
+          automatic_activity_detection: {
+            disabled: false, // Enable automatic VAD
+            start_of_speech_sensitivity: "START_SENSITIVITY_LOW",
+            end_of_speech_sensitivity: "END_SENSITIVITY_LOW",
+            prefix_padding_ms: 100,
+            silence_duration_ms: 2000
+          }
+        }
       }
     };
   }
 
   private handleOpen = (): void => {
     this.log('WebSocket connection opened', 'setup');
+    this.reconnectAttempts = 0; // Reset reconnect attempts on successful connection
     this.updateState({
       isConnected: true,
       isConnecting: false,
@@ -117,19 +131,25 @@ export class GeminiWebSocketManager {
       lastErrorTime: null
     });
 
-    // Session ID generated for debugging purposes
-
     // Send setup message
     const setupMessage = this.createSetupMessage();
     this.log('Sending setup message', 'setup', setupMessage);
 
     try {
       this.websocket!.send(JSON.stringify(setupMessage));
-      this.callbacks.onOpen();
+      this.log('Setup message sent successfully', 'info');
     } catch (error) {
       this.log(`Failed to send setup message: ${error}`, 'error', error);
       this.handleSetupError(new Error('Failed to send setup message'));
+      return;
     }
+
+    // Mark connection as ready and process any queued audio
+    this.isConnectedAndReady = true;
+    this.log('Connection ready, processing audio queue', 'info');
+    this.processAudioQueue();
+
+    this.callbacks.onOpen();
   };
 
   private handleMessage = (event: MessageEvent): void => {
@@ -166,7 +186,10 @@ export class GeminiWebSocketManager {
             message = { binaryAudio: event.data };
           }
         } else {
-          this.log('Unknown message type', 'error', { dataType: typeof event.data });
+          this.log('Unknown message type', 'error', {
+            dataType: typeof event.data,
+            constructor: event.data?.constructor?.name
+          });
           return;
         }
 
@@ -209,6 +232,7 @@ export class GeminiWebSocketManager {
   private handleClose = (event: CloseEvent): void => {
     this.log(`WebSocket closed: ${event.code} - ${event.reason}`, 'info');
 
+    this.isConnectedAndReady = false;
     this.updateState({
       isConnected: false,
       isConnecting: false
@@ -234,13 +258,61 @@ export class GeminiWebSocketManager {
     }
   };
 
+  private processAudioQueue(): void {
+    // Process queued audio chunks
+    while (this.audioQueue.length > 0 && this.isConnectedAndReady) {
+      const audioChunk = this.audioQueue.shift();
+      if (audioChunk) {
+        this.sendAudioChunk(audioChunk);
+      }
+    }
+  }
+
+  private sendAudioChunk(base64Audio: string): boolean {
+    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    const message: RealtimeInputMessage = {
+      realtime_input: {
+        audio: {
+          data: base64Audio,
+          mimeType: "audio/pcm;rate=16000"
+        }
+      }
+    };
+
+    try {
+      this.websocket.send(JSON.stringify(message));
+      this.log(`Sent audio chunk: ${base64Audio.length} bytes`, 'info');
+      return true;
+    } catch (error) {
+      this.log(`Failed to send audio chunk: ${error}`, 'error', error);
+      return false;
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
     }
 
+    // Limit reconnection attempts to prevent infinite loops
+    const maxReconnectAttempts = 5;
+    if (this.reconnectAttempts >= maxReconnectAttempts) {
+      this.log('Max reconnect attempts reached, stopping reconnection', 'error');
+      this.updateState({
+        isConnected: false,
+        isConnecting: false,
+        error: 'Connection failed after multiple attempts. Please check your API key and try again.',
+        lastErrorTime: Date.now()
+      });
+      return;
+    }
+
+    this.reconnectAttempts++;
     this.reconnectTimeout = setTimeout(() => {
-      this.log('Attempting to reconnect', 'info');
+      this.log(`Attempting to reconnect (${this.reconnectAttempts}/${maxReconnectAttempts})`, 'info');
       this.connect();
     }, 5000);
   }
@@ -287,6 +359,15 @@ export class GeminiWebSocketManager {
       this.websocket.onmessage = this.handleMessage;
       this.websocket.onerror = this.handleError;
       this.websocket.onclose = this.handleClose;
+
+      // Add connection timeout to prevent hanging
+      setTimeout(() => {
+        if (this.websocket && this.websocket.readyState === WebSocket.CONNECTING) {
+          this.log('Connection timeout', 'error');
+          this.websocket.close(1006, 'Connection timeout');
+          this.handleSetupError(new Error('Connection timeout'));
+        }
+      }, 10000); // 10 second timeout
     } catch (error) {
       this.log(`Failed to create WebSocket: ${error}`, 'error', error);
       this.handleSetupError(error instanceof Error ? error : new Error(String(error)));
@@ -308,6 +389,10 @@ export class GeminiWebSocketManager {
       this.websocket = null;
     }
 
+    // Clear audio queue and reset connection state
+    this.audioQueue = [];
+    this.isConnectedAndReady = false;
+    this.reconnectAttempts = 0; // Reset reconnect attempts on manual disconnect
     this.updateState({
       isConnected: false,
       isConnecting: false,
@@ -343,28 +428,23 @@ export class GeminiWebSocketManager {
   /**
    * Send audio data to Gemini
    */
-  public sendAudio(base64Audio: string, mimeType: string = "audio/pcm;rate=48000"): boolean {
-    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
-      this.log('Cannot send audio: WebSocket not connected', 'warning');
-      return false;
+  public sendAudio(base64Audio: string, mimeType: string = "audio/pcm;rate=16000"): boolean {
+    // If connection is ready, send immediately
+    if (this.isConnectedAndReady && this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+      return this.sendAudioChunk(base64Audio);
     }
 
-    const message: RealtimeInputMessage = {
-      realtime_input: {
-        audio: {
-          data: base64Audio,
-          mimeType
-        }
-      }
-    };
+    // Otherwise, queue the audio for later
+    this.audioQueue.push(base64Audio);
 
-    try {
-      this.websocket.send(JSON.stringify(message));
-      return true;
-    } catch (error) {
-      this.log(`Failed to send audio: ${error}`, 'error', error);
-      return false;
+    // Limit queue size to prevent memory issues
+    if (this.audioQueue.length > 100) {
+      this.audioQueue.shift(); // Remove oldest chunk
+      this.log('Audio queue full, dropping oldest chunk', 'warning');
     }
+
+    this.log(`Queued audio chunk: ${base64Audio.length} bytes (queue size: ${this.audioQueue.length})`, 'info');
+    return true;
   }
 
   /**

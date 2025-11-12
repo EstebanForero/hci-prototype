@@ -1,28 +1,30 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
-import { Mic, MicOff, Bot, Volume2, VolumeX, Settings, Activity, AlertCircle } from 'lucide-react';
+/**
+ * Clean GeminiLive Component - Focused on UI coordination only
+ * All technical implementation details moved to services
+ */
 
-// Import refactored types and utilities
+import { useState, useCallback, useRef, useEffect } from "react";
+import { motion } from "framer-motion";
+import { Mic, MicOff, Volume2, Settings, MessageCircle } from "lucide-react";
+
+// Import types
 import {
-  ComponentMetrics,
   GeminiLiveProps,
+  ComponentMetrics,
   ChatMessage,
-  AudioStreamRef
-} from '../types/gemini';
+} from "../types/gemini";
 
-// Import refactored audio utilities
-import { playTestTone, createTestPCMData } from '../utils/audioUtils';
+// Import modular services
+import { GeminiConnectionManager, ConnectionCallbacks } from "../services/geminiConnectionManager";
+import { GeminiAudioService, AudioCallbacks } from "../services/geminiAudioService";
 
-interface GeminiResponse {
-  text: string;
-  action?: {
-    type: 'start_wash' | 'stop_wash' | 'get_metrics' | 'configure_wash';
-    config?: any;
-  };
-  confidence: number;
-}
+// Import modular UI components
+import ChatMessages from "./gemini/ChatMessages";
+import TextInput from "./gemini/TextInput";
+import SettingsPanel from "./gemini/SettingsPanel";
+import ControlButtons from "./gemini/ControlButtons";
 
-export default function GeminiLive({
+const GeminiLive: React.FC<GeminiLiveProps> = ({
   parts,
   overallHealth,
   totalCycles,
@@ -30,11 +32,11 @@ export default function GeminiLive({
   isActive,
   currentCycle,
   totalCyclesScheduled,
-  timeRemaining
-}: GeminiLiveProps) {
+  timeRemaining,
+}) => {
+  // UI State only
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [isSDKReady, setIsSDKReady] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [responses, setResponses] = useState<ChatMessage[]>([]);
@@ -47,1431 +49,288 @@ export default function GeminiLive({
   const [useTextInput, setUseTextInput] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
 
-  // Gemini Live WebSocket and audio refs
-  const websocketRef = useRef<WebSocket | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const synthesisRef = useRef<SpeechSynthesisUtterance | null>(null);
+  // Services
+  const connectionManagerRef = useRef<GeminiConnectionManager | null>(null);
+  const audioServiceRef = useRef<GeminiAudioService | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const audioBufferRef = useRef<ArrayBuffer | null>(null);
-  const isListeningRef = useRef<boolean>(false);
-  const sessionIdRef = useRef<string>('');
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
+  // Auto-scroll to bottom
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [responses]);
 
-  // Initialize Gemini Live WebSocket connection
-  const initGeminiLive = useCallback(async () => {
-    try {
-      // Prevent duplicate initializations
-      if (websocketRef.current?.readyState === WebSocket.OPEN) {
-        console.log('🔄 WebSocket already connected, skipping initialization');
-        return;
-      }
+  // Add response to chat
+  const addResponse = useCallback((text: string, type: 'user' | 'assistant') => {
+    setResponses(prev => [...prev, {
+      text,
+      timestamp: new Date(),
+      type
+    }]);
+  }, []);
 
-      // Check localStorage first, then fall back to environment variable
-      const apiKey = localStorage.getItem('VITE_GEMINI_API_KEY') || import.meta.env.VITE_GEMINI_API_KEY;
+  // Clear responses
+  const clearResponses = useCallback(() => {
+    setResponses([]);
+  }, []);
 
-      if (!apiKey || apiKey === 'your_gemini_api_key_here') {
-        setError('Please add your Gemini API key by clicking the logo');
-        setIsSDKReady(false);
-        return;
-      }
+  // Clear transcript
+  const clearTranscript = useCallback(() => {
+    setTranscript('');
+  }, []);
 
-      // Initialize or Recover Audio Context
-      if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-        if (audioContextRef.current && audioContextRef.current.state === 'closed') {
-          console.log('🔊 Audio context was closed, creating new one...');
-        }
+  // Initialize services (only once)
+  const initializeServices = useCallback(() => {
+    // Prevent multiple initializations
+    if (connectionManagerRef.current && audioServiceRef.current) {
+      console.log('🔧 Services already initialized');
+      return;
+    }
 
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-        console.log('🔊 Audio context created, state:', audioContextRef.current.state, 'sampleRate:', audioContextRef.current.sampleRate);
+    console.log('🔧 Initializing Gemini services...');
 
-        // Resume audio context if it's suspended (required by some browsers)
-        if (audioContextRef.current.state === 'suspended') {
-          await audioContextRef.current.resume();
-          console.log('🔊 Audio context resumed');
-        }
-      } else {
-        console.log('🔊 Audio context already exists, state:', audioContextRef.current.state);
+    // Clean up any existing services first
+    if (connectionManagerRef.current) {
+      connectionManagerRef.current.disconnect();
+      connectionManagerRef.current = null;
+    }
+    if (audioServiceRef.current) {
+      audioServiceRef.current.cleanup();
+      audioServiceRef.current = null;
+    }
 
-        // If context is suspended, try to resume it
-        if (audioContextRef.current.state === 'suspended') {
-          await audioContextRef.current.resume();
-          console.log('🔊 Audio context resumed from suspended state');
-        }
-      }
+    // Initialize audio service
+    audioServiceRef.current = new GeminiAudioService(false); // Disable debug logs for now
 
-      // Generate session ID
-      sessionIdRef.current = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      // Close any existing WebSocket before creating a new one
-      if (websocketRef.current) {
-        console.log('🔄 Closing existing WebSocket before creating new connection...');
-        websocketRef.current.close();
-        websocketRef.current = null;
-      }
-
-      // Connect to Gemini Live API WebSocket
-      // Using the correct endpoint format for Gemini Live API
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${apiKey}`;
-
-      console.log('🔌 Creating new WebSocket connection...');
-      websocketRef.current = new WebSocket(wsUrl);
-
-      websocketRef.current.onopen = () => {
-        console.log('✅ Gemini Live WebSocket connected');
-
-        // Define enhanced function declarations for wash control
-        const startWashFunction = {
-          name: "start_wash",
-          description: "Start the washing machine with optimized settings based on clothing type",
-          parameters: {
-            type: "object",
-            properties: {
-              clothing_type: {
-                type: "string",
-                description: "Type of clothes being washed (helps determine optimal settings)",
-                enum: ["everyday", "delicates", "heavy_duty", "towels", "sportswear", "mixed"]
-              },
-              temperature: {
-                type: "string",
-                description: "Water temperature setting (auto-recommended based on clothing type if not specified)",
-                enum: ["cold", "warm", "hot", "auto"]
-              },
-              cycle_type: {
-                type: "string",
-                description: "Type of wash cycle (auto-recommended based on clothing type if not specified)",
-                enum: ["quick", "normal", "heavy", "delicates", "eco", "auto"]
-              },
-              extra_rinse: {
-                type: "boolean",
-                description: "Add extra rinse cycle for better cleaning"
-              },
-              pre_soak: {
-                type: "boolean",
-                description: "Add pre-soak for heavily soiled items"
-              }
-            },
-            required: []
-          }
-        };
-
-        const stopWashFunction = {
-          name: "stop_wash",
-          description: "Stop the current wash cycle immediately",
-          parameters: {
-            type: "object",
-            properties: {
-              reason: {
-                type: "string",
-                description: "Reason for stopping the cycle"
-              }
-            }
-          }
-        };
-
-        const getWashStatusFunction = {
-          name: "get_wash_status",
-          description: "Get current status and progress of the washing machine",
-          parameters: {
-            type: "object",
-            properties: {
-              detailed: {
-                type: "boolean",
-                description: "Include detailed component status and diagnostics"
-              }
-            }
-          }
-        };
-
-        const getCurrentCyclesFunction = {
-          name: "get_current_cycles",
-          description: "Get information about current and scheduled wash cycles",
-          parameters: {
-            type: "object",
-            properties: {
-              include_history: {
-                type: "boolean",
-                description: "Include recent cycle history"
-              }
-            }
-          }
-        };
-
-        const getComponentStatesFunction = {
-          name: "get_component_states",
-          description: "Get detailed health and operational status of all washing machine components",
-          parameters: {
-            type: "object",
-            properties: {
-              component_type: {
-                type: "string",
-                description: "Filter by specific component type (motor, pump, heater, etc.)",
-                enum: ["motor", "pump", "heater", "drum", "sensors", "electronics", "all"]
-              }
-            }
-          }
-        };
-
-        // Send session configuration with function calling and enhanced system instruction
-        const setupMessage = {
-          setup: {
-            model: "models/gemini-2.5-flash-native-audio-preview-09-2025",
-            generation_config: {
-              response_modalities: ["AUDIO"],
-              speech_config: {
-                voice_config: {
-                  prebuilt_voice_config: {
-                    voice_name: "Kore"
-                  }
-                }
-              }
-            },
-            system_instruction: {
-              parts: [{
-                text: `You are SmartWash Pro AI Assistant, a helpful voice-controlled washing machine assistant.
-
-Current system status:
-- Overall Health: ${overallHealth}%
-- Status: ${isActive ? 'running' : 'idle'}
-- Current Cycle: ${currentCycle}/${totalCyclesScheduled}
-- Time Remaining: ${timeRemaining}
-- Components: ${parts.map(p => `${p.name} (${p.health}% health)`).join(', ')}
-
-You can help users:
-1. Start smart wash cycles (ask about clothing type, recommend optimal settings)
-2. Stop current wash cycles
-3. Check wash status and progress
-4. Get current cycles and scheduling information
-5. Check component health and diagnostics
-6. Answer questions about washing machine operation
-
-When users want to start a wash:
-- Ask what type of clothes they're washing (everyday, delicates, heavy_duty, towels, sportswear, mixed)
-- Recommend optimal temperature and cycle settings based on clothing type
-- Ask if they want extra features like pre-soak or extra rinse
-- Use the start_wash function with smart recommendations
-
-For status inquiries, use get_wash_status for basic info or get_current_cycles for scheduling details. Use get_component_states for health diagnostics.
-
-Always respond conversationally and briefly. Do not send any test messages or greet automatically - wait for user input.`
-              }]
-            },
-            tools: [{
-              function_declarations: [
-                startWashFunction,
-                stopWashFunction,
-                getWashStatusFunction,
-                getCurrentCyclesFunction,
-                getComponentStatesFunction
-              ]
-            }]
-          }
-        };
-
-        console.log('📤 Sending setup message:', JSON.stringify(setupMessage, null, 2));
-        websocketRef.current.send(JSON.stringify(setupMessage));
-        console.log('✅ Setting isSDKReady to true');
+    // Initialize connection manager with callbacks
+    const connectionCallbacks: ConnectionCallbacks = {
+      onReady: () => {
+        console.log('✅ Gemini connection ready');
         setIsSDKReady(true);
         setError(null);
-      };
-
-      websocketRef.current.onmessage = async (event) => {
-        try {
-          console.log('📨 Received WebSocket message, type:', typeof event.data);
-
-          // Handle both text and binary messages
-          if (typeof event.data === 'string') {
-            const data = JSON.parse(event.data);
-            console.log('🔍 Gemini Live Response (text):', JSON.stringify(data, null, 2));
-            handleGeminiResponse(data);
-          } else if (event.data instanceof Blob) {
-            console.log('🔊 Received binary blob, size:', event.data.size, 'type:', event.data.type);
-
-            // Try to decode blob as text first (might be JSON)
-            try {
-              const text = await event.data.text();
-              console.log('🔍 Blob as text (length:', text.length, '):', text.substring(0, 200) + (text.length > 200 ? '...' : ''));
-              const data = JSON.parse(text);
-              console.log('🔍 Gemini Live Response (blob->text):', JSON.stringify(data, null, 2));
-              handleGeminiResponse(data);
-            } catch (textError) {
-              console.log('🔍 Not text, trying as binary audio...', textError.message);
-              handleBinaryAudio(event.data);
-            }
-          } else if (event.data instanceof ArrayBuffer) {
-            console.log('🔊 Received ArrayBuffer, size:', event.data.byteLength);
-
-            // Try to decode ArrayBuffer as text
-            try {
-              const text = new TextDecoder().decode(event.data);
-              console.log('🔍 ArrayBuffer as text (length:', text.length, '):', text.substring(0, 200) + (text.length > 200 ? '...' : ''));
-              const data = JSON.parse(text);
-              console.log('🔍 Gemini Live Response (arraybuffer->text):', JSON.stringify(data, null, 2));
-              handleGeminiResponse(data);
-            } catch (textError) {
-              console.log('🔍 Not text, trying as binary audio...', textError.message);
-              const blob = new Blob([event.data], { type: 'application/octet-stream' });
-              handleBinaryAudio(blob);
-            }
-          } else {
-            console.log('🔍 Unknown message type:', typeof event.data, event.data);
-          }
-        } catch (err) {
-          console.error('Error parsing Gemini response:', err);
-        }
-      };
-
-      websocketRef.current.onerror = (error) => {
-        console.error('Gemini Live WebSocket error:', error);
-        setError('Failed to connect to Gemini Live API. Will retry...');
+      },
+      onError: (errorMessage: string) => {
+        console.error('❌ Connection error:', errorMessage);
+        setError(errorMessage);
         setIsSDKReady(false);
-      };
-
-      websocketRef.current.onclose = (event) => {
-        console.log('Gemini Live WebSocket closed:', event.code, event.reason);
-        setIsSDKReady(false);
-
-        // Check for quota exceeded error
-        if (event.code === 1011 || event.reason.includes('quota')) {
-          setError('API quota exceeded. Please check your billing at https://aistudio.google.com/');
-          // Don't auto-reconnect for quota errors
-          return;
+      },
+      onMessage: (message: any) => {
+        if (message.text) {
+          addResponse(message.text, message.type || 'assistant');
         }
-
-        // Auto-reconnect if not intentionally closed
-        if (event.code !== 1000) {
-          scheduleReconnect();
-        }
-      };
-
-    } catch (err) {
-      console.error('Failed to initialize Gemini Live:', err);
-      setError('Failed to initialize Gemini Live. Please check your API key.');
-      setIsSDKReady(false);
-    }
-  }, []); // Remove dependencies to prevent infinite reconnection loop
-
-  // Schedule reconnection
-  const scheduleReconnect = useCallback(() => {
-    // Don't reconnect if we already have an active connection
-    if (websocketRef.current?.readyState === WebSocket.OPEN) {
-      console.log('🔄 Already connected, skipping reconnection');
-      return;
-    }
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-
-    reconnectTimeoutRef.current = setTimeout(() => {
-      console.log('🔄 Reconnecting to Gemini Live...');
-      initGeminiLive();
-    }, 5000);
-  }, [initGeminiLive]);
-
-  // Parse commands from AI response and execute them
-  const parseAndExecuteCommands = useCallback((response: string) => {
-    const lowerResponse = response.toLowerCase();
-
-    // Check for wash start commands
-    if (lowerResponse.includes('starting wash') || lowerResponse.includes('wash cycle') || lowerResponse.includes('start wash')) {
-      if (!isActive) {
-        let washConfig = {
-          program: 'normal',
-          temperature: 40,
-          spinSpeed: 1200,
-          duration: 60,
-          waterLevel: 'medium' as const,
-          extraRinse: false,
-          preWash: false,
-        };
-
-        // Parse wash type from response
-        if (lowerResponse.includes('quick') || lowerResponse.includes('fast')) {
-          washConfig.program = 'quick';
-          washConfig.duration = 30;
-        } else if (lowerResponse.includes('delicate') || lowerResponse.includes('gentle')) {
-          washConfig.program = 'delicate';
-          washConfig.temperature = 30;
-          washConfig.spinSpeed = 800;
-          washConfig.duration = 60;
-        } else if (lowerResponse.includes('heavy') || lowerResponse.includes('tough')) {
-          washConfig.program = 'heavy';
-          washConfig.temperature = 90;
-          washConfig.spinSpeed = 1400;
-          washConfig.duration = 120;
-          washConfig.extraRinse = true;
-        } else if (lowerResponse.includes('eco')) {
-          washConfig.program = 'eco';
-          washConfig.temperature = 40;
-          washConfig.spinSpeed = 1000;
-          washConfig.duration = 150;
-        }
-
-        onStartWash(washConfig);
-      }
-    }
-  }, [onStartWash, isActive]);
-
-  // Speak function (fallback)
-  const speak = useCallback((text: string) => {
-    if ('speechSynthesis' in window && volume > 0) {
-      window.speechSynthesis.cancel();
-
-      synthesisRef.current = new SpeechSynthesisUtterance(text);
-      synthesisRef.current.volume = volume;
-      synthesisRef.current.rate = 1.0;
-      synthesisRef.current.pitch = 1.0;
-
-      synthesisRef.current.onstart = () => setIsSpeaking(true);
-      synthesisRef.current.onend = () => setIsSpeaking(false);
-      synthesisRef.current.onerror = () => setIsSpeaking(false);
-
-      window.speechSynthesis.speak(synthesisRef.current);
-    }
-  }, [volume]);
-
-  // Handle Gemini Live responses
-  const handleGeminiResponse = useCallback((data: any) => {
-    console.log('🔍 Processing Gemini response:', JSON.stringify(data, null, 2));
-
-    // Handle setup completion
-    if (data.setup_complete || data.setupComplete) {
-      console.log('✅ Setup complete');
-      return;
-    }
-
-    // Check for any error responses
-    if (data.error) {
-      console.error('❌ Gemini returned error:', data.error);
-      setError(`Gemini error: ${data.error.message || data.error}`);
-      return;
-    }
-
-    let foundAudio = false;
-    let foundText = false;
-
-    // Enhanced content detection using recursive search (including tool calls)
-    const extractContentFromMessage = (msg: any): { textParts: string[], audioParts: string[], toolCalls: any[] } => {
-      const textParts: string[] = [];
-      const audioParts: string[] = [];
-      const toolCalls: any[] = [];
-
-      // Helper function to search recursively for content
-      const searchRecursively = (obj: any, path: string = '') => {
-        if (obj === null || obj === undefined) return;
-
-        // Check for text content
-        if (obj.text && typeof obj.text === 'string' && obj.text.trim()) {
-          textParts.push(obj.text);
-          console.log(`💬 Found text at ${path}: ${obj.text.substring(0, 50)}...`);
-        }
-
-        // Check for tool calls (both possible structures)
-        if (obj.functionCalls && Array.isArray(obj.functionCalls)) {
-          toolCalls.push(...obj.functionCalls);
-          console.log(`🔧 Found ${obj.functionCalls.length} tool calls at ${path}`);
-        } else if (obj.function_calls && Array.isArray(obj.function_calls)) {
-          toolCalls.push(...obj.function_calls);
-          console.log(`🔧 Found ${obj.function_calls.length} tool calls at ${path}`);
-        }
-
-        // Check for common audio data fields
-        const audioFields = ['data', 'audio_data', 'audio', 'inline_data', 'inlineData'];
-        for (const field of audioFields) {
-          if (obj[field] && typeof obj[field] === 'string' && obj[field].length > 100) {
-            audioParts.push(obj[field]);
-            console.log(`🎵 Found audio at ${path}.${field}: ${obj[field].length} chars`);
-          }
-        }
-
-        // Recursively search objects and arrays
-        if (typeof obj === 'object' && !Array.isArray(obj)) {
-          for (const key in obj) {
-            if (obj.hasOwnProperty(key)) {
-              searchRecursively(obj[key], path ? `${path}.${key}` : key);
-            }
-          }
-        } else if (Array.isArray(obj)) {
-          for (let i = 0; i < obj.length; i++) {
-            searchRecursively(obj[i], `${path}[${i}]`);
-          }
-        }
-      };
-
-      searchRecursively(msg);
-      return { textParts, audioParts, toolCalls };
-    };
-
-    // Extract all content from the message
-    const { textParts, audioParts, toolCalls } = extractContentFromMessage(data);
-
-    // Handle tool call cancellations first
-    if (data.toolCallCancellation && data.toolCallCancellation.ids) {
-      console.log(`🔧 Tool calls cancelled: ${data.toolCallCancellation.ids.join(', ')}`);
-      return; // Don't process further if tools were cancelled
-    }
-
-    // Handle tool calls
-    if (toolCalls.length > 0) {
-      console.log(`🔧 Processing ${toolCalls.length} tool calls`);
-
-      const functionResponses: any[] = [];
-
-      for (const toolCall of toolCalls) {
-        try {
-          const functionName = toolCall.name || toolCall.function?.name;
-          const args = toolCall.args || toolCall.function?.args || {};
-          const callId = toolCall.id || toolCall.function?.id;
-
-          console.log(`🔧 Executing function: ${functionName}`, args);
-
-          if (functionName === 'start_wash') {
-            const { clothing_type, temperature, cycle_type, extra_rinse, pre_soak } = args;
-
-            // Smart recommendations based on clothing type
-            let smartTemp = temperature;
-            let smartCycle = cycle_type;
-            let recommendations = [];
-
-            if (!temperature || temperature === 'auto') {
-              const tempRecommendations = {
-                'delicates': 'cold',
-                'sportswear': 'cold',
-                'everyday': 'warm',
-                'mixed': 'warm',
-                'heavy_duty': 'hot',
-                'towels': 'hot'
-              };
-              smartTemp = tempRecommendations[clothing_type] || 'warm';
-              recommendations.push(`${smartTemp} water for ${clothing_type}`);
-            }
-
-            if (!cycle_type || cycle_type === 'auto') {
-              const cycleRecommendations = {
-                'delicates': 'delicates',
-                'sportswear': 'quick',
-                'everyday': 'normal',
-                'mixed': 'normal',
-                'heavy_duty': 'heavy',
-                'towels': 'heavy'
-              };
-              smartCycle = cycleRecommendations[clothing_type] || 'normal';
-              if (!temperature || temperature === 'auto') {
-                recommendations.push(`${smartCycle} cycle`);
-              } else {
-                recommendations.push(`${smartCycle} cycle for ${clothing_type}`);
-              }
-            }
-
-            // Calculate duration
-            const durationMap = {
-              'quick': 30,
-              'delicates': 45,
-              'eco': 50,
-              'normal': 60,
-              'heavy': 90
-            };
-            const baseDuration = durationMap[smartCycle] || 60;
-            const finalDuration = baseDuration + (extra_rinse ? 10 : 0) + (pre_soak ? 15 : 0);
-
-            console.log(`🧺 Starting smart wash: ${clothing_type}, ${smartTemp} water, ${smartCycle} cycle`);
-
-            // Execute the wash start
-            const washConfig = {
-              clothing_type: clothing_type || 'everyday',
-              temperature: smartTemp,
-              cycle: smartCycle,
-              duration: finalDuration,
-              extra_rinse: extra_rinse || false,
-              pre_soak: pre_soak || false
-            };
-
-            onStartWash(washConfig);
-
-            const responseMessage = recommendations.length > 0
-              ? `Perfect! I've started your wash with smart settings: ${recommendations.join(', ')}.${extra_rinse ? ' Added extra rinse.' : ''}${pre_soak ? ' Added pre-soak.' : ''}`
-              : `Wash cycle started successfully with ${smartTemp} water and ${smartCycle} cycle.`;
-
-            functionResponses.push({
-              id: callId,
-              name: functionName,
-              response: {
-                success: true,
-                settings: washConfig,
-                message: responseMessage
-              }
-            });
-
-          } else if (functionName === 'stop_wash') {
-            const { reason } = args;
-            console.log(`🛑 Stopping wash cycle${reason ? ` - ${reason}` : ''}`);
-
-            // Here you would call the actual stop function
-            // For now, we'll just acknowledge
-
-            functionResponses.push({
-              id: callId,
-              name: functionName,
-              response: {
-                success: true,
-                message: reason
-                  ? `Wash cycle stopped: ${reason}. The machine is now safe to open.`
-                  : 'Wash cycle stopped successfully. The machine is now safe to open.'
-              }
-            });
-
-          } else if (functionName === 'get_wash_status') {
-            const { detailed } = args;
-            console.log('📊 Getting wash status' + (detailed ? ' (detailed)' : ''));
-
-            const status = {
-              health: overallHealth,
-              is_active: isActive,
-              current_cycle: currentCycle,
-              total_cycles: totalCyclesScheduled,
-              time_remaining: timeRemaining,
-              parts: detailed ? parts : parts.map(p => ({ name: p.name, health: p.health }))
-            };
-
-            functionResponses.push({
-              id: callId,
-              name: functionName,
-              response: status
-            });
-
-          } else if (functionName === 'get_current_cycles') {
-            const { include_history } = args;
-            console.log('📋 Getting current cycles' + (include_history ? ' (with history)' : ''));
-
-            const cyclesInfo = {
-              current_cycle: currentCycle,
-              total_scheduled: totalCyclesScheduled,
-              is_active: isActive,
-              time_remaining: timeRemaining,
-              machine_health: overallHealth,
-              next_scheduled: null, // Would come from your scheduling system
-              recent_cycles: include_history ? [
-                { type: 'normal', completed_at: '2 hours ago', duration: 45 },
-                { type: 'quick', completed_at: 'yesterday', duration: 30 }
-              ] : []
-            };
-
-            functionResponses.push({
-              id: callId,
-              name: functionName,
-              response: cyclesInfo
-            });
-
-          } else if (functionName === 'get_component_states') {
-            const { component_type } = args;
-            console.log(`🔧 Getting component states` + (component_type ? ` (${component_type})` : ' (all)'));
-
-            let componentsToShow = parts;
-            if (component_type && component_type !== 'all') {
-              componentsToShow = parts.filter(p =>
-                p.name.toLowerCase().includes(component_type.toLowerCase())
-              );
-            }
-
-            const componentStates = {
-              overall_health: overallHealth,
-              components: componentsToShow.map(p => ({
-                name: p.name,
-                health: p.health,
-                status: p.health > 80 ? 'optimal' : p.health > 50 ? 'acceptable' : 'needs_attention',
-                last_maintenance: '2 weeks ago' // Would come from your maintenance system
-              })),
-              total_components: parts.length,
-              healthy_components: parts.filter(p => p.health > 80).length,
-              components_needing_attention: parts.filter(p => p.health <= 50).length
-            };
-
-            functionResponses.push({
-              id: callId,
-              name: functionName,
-              response: componentStates
-            });
-
-          } else {
-            console.log(`❌ Unknown function: ${functionName}`);
-            functionResponses.push({
-              id: callId,
-              name: functionName,
-              response: {
-                error: `Unknown function: ${functionName}`
-              }
-            });
-          }
-
-        } catch (error) {
-          console.error('❌ Error executing tool call:', error);
-          functionResponses.push({
-            id: toolCall.id || toolCall.function?.id,
-            name: toolCall.name || toolCall.function?.name,
-            response: {
-              error: `Error executing function: ${error.message}`
-            }
-          });
-        }
-      }
-
-      // Send function responses back to Gemini
-      if (functionResponses.length > 0 && websocketRef.current?.readyState === WebSocket.OPEN) {
-        const toolResponseMessage = {
-          tool_response: {
-            function_responses: functionResponses
-          }
-        };
-
-        console.log('🔧 Sending tool responses:', JSON.stringify(toolResponseMessage, null, 2));
-        websocketRef.current.send(JSON.stringify(toolResponseMessage));
-      }
-    }
-
-    // Handle text responses
-    if (textParts.length > 0) {
-      const combinedText = textParts.join(' ');
-      if (combinedText.trim()) {
-        console.log('💬 Received text response:', combinedText.substring(0, 100) + '...');
-        setResponses(prev => [...prev, {
-          text: combinedText,
-          timestamp: new Date(),
-          type: 'assistant'
-        }]);
-        foundText = true;
-
-        // Parse for wash commands and execute actions
-        parseAndExecuteCommands(combinedText);
-
-        // Convert text to speech as fallback
-        if (volume > 0) {
-          speak(combinedText);
-        }
-      }
-    }
-
-    // Handle audio responses - REAL-TIME STREAMING
-    if (audioParts.length > 0) {
-      audioParts.forEach((audioData, index) => {
-        foundAudio = true;
-        console.log(`🔊 🎵 REAL-TIME AUDIO CHUNK ${index + 1}: ${audioData.length} chars`);
-
-        // Play immediately - NO BUFFERING!
-        try {
-          playAudioChunk(audioData, !isSpeaking); // isFirstChunk = !isSpeaking
-        } catch (error) {
-          console.error('❌ Error playing real-time audio:', error);
-        }
-      });
-    }
-
-    if (!foundAudio && !foundText) {
-      
-      // Log all available keys for debugging
-      console.log('🔍 Available response keys:', Object.keys(data));
-
-      // Look for any base64-like strings anywhere in the response
-      const dataStr = JSON.stringify(data);
-      const base64Pattern = /[A-Za-z0-9+/]{40,}={0,2}/g;
-      const matches = dataStr.match(base64Pattern);
-      if (matches && matches.length > 0) {
-        console.log('🔍 Found potential base64 data:', matches.length, 'matches');
-        
-        // Try to play the first match as audio
-        try {
-          console.log('🔊 Attempting to play first base64 match as audio...');
-          playAudioChunk(matches[0], true); // isFirstChunk = true
-        } catch (error) {
-          console.log('🔊 Base64 match failed as audio:', error.message);
-        }
-      }
-    }
-
-    // Handle transcription if available
-    if (data.server_content?.output_transcription?.text) {
-      console.log('📝 Transcription:', data.server_content.output_transcription.text);
-          }
-
-    // Handle turn completion
-    if (data.server_content?.turn_complete) {
-      console.log('🔄 Turn complete - stopping speech');
-      
-      // Stop speaking when turn is complete
-      if (isSpeaking) {
-        setTimeout(() => {
-          setIsSpeaking(false);
-          audioStreamRef.current.isPlaying = false;
-          audioStreamRef.current.nextPlayTime = null;
-          audioStreamRef.current.hasStarted = false; // Reset for next interaction
-          audioStreamRef.current.buffer = []; // Clear any remaining buffer
-          console.log('🔊 🛑 Stopped speaking and reset stream state');
-        }, 500); // Small delay to allow final audio chunks to finish
-      }
-    }
-  }, [volume, onStartWash, isActive, currentCycle, totalCyclesScheduled, parseAndExecuteCommands, speak, isSpeaking]);
-
-  // Simple audio buffer playback function
-  
-  
-  
-  // Real-time audio streaming - play chunks as they arrive
-  const audioStreamRef = useRef<AudioStreamRef>({
-    buffer: [],
-    isPlaying: false,
-    scheduleTimeout: null,
-    nextPlayTime: null,
-    hasStarted: false
-  });
-
-  // Helper function to play a single audio chunk immediately (must be defined first)
-  const playAudioChunkImmediate = useCallback((base64Audio: string, isFirstChunk: boolean, scheduledTime?: number) => {
-    if (!audioContextRef.current) return;
-
-    try {
-      // Decode base64 to binary
-      const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      // Create Int16Array from bytes
-      const pcmData = new Int16Array(bytes.buffer.slice(0, bytes.length));
-
-      // Create audio buffer at correct sample rate (24kHz for Gemini audio)
-      const audioBuffer = audioContextRef.current.createBuffer(1, pcmData.length, 24000);
-      const channelData = audioBuffer.getChannelData(0);
-
-      // Convert 16-bit PCM to float32
-      for (let i = 0; i < pcmData.length; i++) {
-        channelData[i] = pcmData[i] / 32768.0;
-      }
-
-      // Apply gentle fade-in only for the very first chunk
-      if (isFirstChunk && audioBuffer.length > 100) {
-        const fadeLength = Math.min(100, audioBuffer.length);
-        for (let i = 0; i < fadeLength; i++) {
-          const fadeGain = i / fadeLength;
-          channelData[i] *= fadeGain;
-        }
-      }
-
-      // Create gain node
-      const gainNode = audioContextRef.current.createGain();
-      gainNode.gain.value = volume * 0.5; // Moderate volume
-
-      // Create buffer source
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(gainNode);
-      gainNode.connect(audioContextRef.current.destination);
-
-      // Start at scheduled time or immediately
-      if (scheduledTime !== undefined) {
-        source.start(scheduledTime);
-      } else {
-        const currentTime = audioContextRef.current.currentTime;
-        const startTime = Math.max(currentTime + 0.005, audioStreamRef.current.nextPlayTime || currentTime);
-        source.start(startTime);
-        audioStreamRef.current.nextPlayTime = startTime + (audioBuffer.length / 24000);
-      }
-
-      if (isFirstChunk) {
-        const duration = pcmData.length / 24000;
-        console.log(`🔊 🎵 Playing first chunk: ${pcmData.length} samples, ${duration.toFixed(3)}s duration`);
-      }
-    } catch (error) {
-      console.error('❌ Error in immediate audio playback:', error);
-    }
-  }, [volume]);
-
-  // Helper function to start playback with buffered chunks (defined after playAudioChunkImmediate)
-  const startBufferedPlayback = useCallback(() => {
-    if (!audioContextRef.current || audioStreamRef.current.buffer.length === 0) return;
-
-    try {
-      setIsSpeaking(true);
-      audioStreamRef.current.isPlaying = true;
-
-      const currentTime = audioContextRef.current.currentTime;
-      let nextStartTime = currentTime + 0.02; // Small initial delay
-
-      const chunkCount = audioStreamRef.current.buffer.length;
-
-      // Play all buffered chunks in sequence
-      audioStreamRef.current.buffer.forEach((chunk, index) => {
-        playAudioChunkImmediate(chunk.base64Audio, index === 0, nextStartTime);
-        const duration = (chunk.base64Audio.length * 3/4) / 24000; // Approximate duration
-        nextStartTime += duration + 0.005; // Small gap between chunks
-      });
-
-      // Clear buffer after scheduling
-      audioStreamRef.current.buffer = [];
-      audioStreamRef.current.nextPlayTime = nextStartTime;
-
-      console.log(`🔊 ✅ Started buffered playback with ${chunkCount} chunks`);
-
-    } catch (error) {
-      console.error('❌ Error starting buffered playback:', error);
-    }
-  }, [playAudioChunkImmediate]);
-
-  // Enhanced real-time audio streaming with smart buffering to prevent initial distortion
-  const playAudioChunk = useCallback((base64Audio: string, isFirstChunk: boolean = false) => {
-    if (!audioContextRef.current) return;
-
-    try {
-      // For the very first chunk, buffer it briefly to collect a few chunks
-      if (isFirstChunk && !audioStreamRef.current.hasStarted) {
-        audioStreamRef.current.buffer = [{ base64Audio, isFirstChunk: true }];
-        audioStreamRef.current.hasStarted = true;
-
-        // Wait a moment to collect 2-3 chunks before starting playback
-        setTimeout(() => {
-          if (audioStreamRef.current.buffer.length > 0 && !audioStreamRef.current.isPlaying) {
-            startBufferedPlayback();
-          }
-        }, 150); // 150ms buffer to collect initial chunks
-
-        console.log('🔊 Buffering first chunk, waiting for more...');
-        return;
-      }
-
-      // Add to buffer if we're still in the initial buffering phase
-      if (!audioStreamRef.current.isPlaying && audioStreamRef.current.hasStarted) {
-        audioStreamRef.current.buffer.push({ base64Audio, isFirstChunk: false });
-        console.log(`🔊 Added to buffer (${audioStreamRef.current.buffer.length} chunks)`);
-        return;
-      }
-
-      // If we're already playing, use the immediate playback logic
-      if (audioStreamRef.current.isPlaying) {
-        playAudioChunkImmediate(base64Audio, false);
-      }
-
-    } catch (error) {
-      console.error('❌ Error in audio chunk buffering:', error);
-    }
-  }, [startBufferedPlayback, playAudioChunkImmediate]);
-
-  // Simple wrapper that plays immediately (real-time streaming)
-  
-  // Helper function to play audio buffer
-  const playAudioBuffer = useCallback(async (arrayBuffer: ArrayBuffer) => {
-    if (!audioContextRef.current) return;
-
-    try {
-      console.log('🔊 Playing audio buffer, size:', arrayBuffer.byteLength);
-
-      // Try different decoding approaches
-      let audioBuffer;
-
-      try {
-        // Method 1: Direct decodeAudioData (for standard formats like WAV, MP3, etc.)
-        audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer.slice(0)); // Create a copy
-      } catch (directError) {
-        console.log('🔍 Direct decode failed, trying as WAV...');
-
-        // Method 2: Try to manually parse as PCM WAV
-        try {
-          audioBuffer = await parsePCMWav(arrayBuffer, audioContextRef.current!);
-        } catch (wavError) {
-          console.log('🔍 WAV parse failed, trying as raw PCM...');
-
-          // Method 3: Try as raw PCM data
+      },
+      onTranscription: (text: string) => {
+        setTranscript(text);
+      },
+      onToolCall: async (toolCalls: any[]) => {
+        if (connectionManagerRef.current) {
           try {
-            audioBuffer = await parseRawPCM(arrayBuffer, audioContextRef.current!);
-          } catch (pcmError) {
-            throw new Error(`All decode methods failed: ${directError.message}, ${wavError.message}, ${pcmError.message}`);
-          }
-        }
-      }
-
-      // Create gain node for volume control
-      const gainNode = audioContextRef.current.createGain();
-      gainNode.gain.value = volume;
-
-      // Play the audio
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(gainNode);
-      gainNode.connect(audioContextRef.current.destination);
-      source.start();
-
-      setIsSpeaking(true);
-      source.onended = () => setIsSpeaking(false);
-
-      console.log('🔊 Playing audio buffer successfully');
-    } catch (error) {
-      console.error('Error playing audio buffer:', error);
-
-      // Fallback: Create a simple tone to indicate audio was received
-      try {
-        const fallbackBuffer = audioContextRef.current!.createBuffer(1, 1000, 24000);
-        const channelData = fallbackBuffer.getChannelData(0);
-        for (let i = 0; i < channelData.length; i++) {
-          channelData[i] = Math.sin(2 * Math.PI * 440 * i / 24000) * 0.1;
-        }
-
-        const source = audioContextRef.current!.createBufferSource();
-        source.buffer = fallbackBuffer;
-        source.connect(audioContextRef.current.destination);
-        source.start();
-
-        console.log('🔊 Playing fallback tone');
-      } catch (fallbackError) {
-        console.error('Fallback also failed:', fallbackError);
-      }
-    }
-  }, [volume]);
-
-  // Handle binary audio from WebSocket
-  const handleBinaryAudio = useCallback(async (audioBlob: Blob) => {
-    if (!audioContextRef.current) return;
-
-    try {
-      console.log('🔍 Audio blob details:', {
-        size: audioBlob.size,
-        type: audioBlob.type,
-        isClosed: audioBlob.isClosed
-      });
-
-      // Try to get first few bytes to understand format
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const dataView = new DataView(arrayBuffer);
-      console.log('🔍 First 16 bytes:', Array.from(new Uint8Array(arrayBuffer.slice(0, 16))));
-
-      // Play the audio buffer using our helper function
-      await playAudioBuffer(arrayBuffer);
-    } catch (error) {
-      console.error('Error handling binary audio:', error);
-    }
-  }, [playAudioBuffer]);
-
-  // Parse PCM WAV format
-  const parsePCMWav = useCallback(async (arrayBuffer: ArrayBuffer, audioContext: AudioContext): Promise<AudioBuffer> => {
-    // Check if it's a WAV file
-    const view = new DataView(arrayBuffer);
-    if (view.getUint32(0, false) !== 0x52494646 || view.getUint32(8, false) !== 0x57415645) {
-      throw new Error('Not a valid WAV file');
-    }
-
-    // Simple WAV parser for 16-bit PCM
-    const sampleRate = view.getUint32(24, true);
-    const channels = view.getUint16(22, true);
-    const bitsPerSample = view.getUint16(34, true);
-
-    if (bitsPerSample !== 16) {
-      throw new Error('Only 16-bit PCM supported');
-    }
-
-    const dataOffset = view.getUint32(16, true) + 8;
-    const data = new Int16Array(arrayBuffer, dataOffset);
-    const samples = data.length / channels;
-
-    const audioBuffer = audioContext.createBuffer(channels, samples, sampleRate);
-    for (let channel = 0; channel < channels; channel++) {
-      const channelData = audioBuffer.getChannelData(channel);
-      for (let i = 0; i < samples; i++) {
-        channelData[i] = data[i * channels + channel] / 32768;
-      }
-    }
-
-    return audioBuffer;
-  }, []);
-
-  // Parse raw PCM data
-  const parseRawPCM = useCallback(async (arrayBuffer: ArrayBuffer, audioContext: AudioContext): Promise<AudioBuffer> => {
-    // Assume 16-bit PCM, mono, 24kHz
-    const data = new Int16Array(arrayBuffer);
-    const sampleRate = 24000;
-    const channels = 1;
-    const samples = data.length / channels;
-
-    const audioBuffer = audioContext.createBuffer(channels, samples, sampleRate);
-    const channelData = audioBuffer.getChannelData(0);
-    for (let i = 0; i < samples; i++) {
-      channelData[i] = data[i] / 32768;
-    }
-
-    return audioBuffer;
-  }, []);
-
-  // ========== AUDIO TESTING MODULES ==========
-
-  
-  
-  
-  
-  // Setup audio recording for Gemini Live using proper PCM format (16-bit, 16kHz, mono)
-  const setupAudioRecording = useCallback(async () => {
-    try {
-      console.log('🎤 Setting up audio recording...');
-
-      // Check if audio context is valid
-      if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-        console.log('🔊 Audio context not available for recording');
-        return false;
-      }
-
-      // Resume audio context if suspended
-      if (audioContextRef.current.state === 'suspended') {
-        console.log('🔊 Resuming suspended audio context...');
-        await audioContextRef.current.resume();
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 16000
-        }
-      });
-
-      console.log('🎤 Got media stream:', stream.getAudioTracks().length, 'tracks');
-      mediaStreamRef.current = stream;
-
-      if (websocketRef.current?.readyState === WebSocket.OPEN) {
-        console.log('🎤 Setting up direct PCM audio capture...');
-
-        // Create a direct PCM capture using AudioContext and ScriptProcessorNode
-        // But this time we'll make it work by ensuring proper audio context setup
-        const audioContext = audioContextRef.current;
-
-        // Create a script processor for real-time PCM conversion
-        const bufferSize = 4096;
-        const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
-        processorRef.current = processor;
-
-        let audioChunkCounter = 0;
-
-        // Create source from the microphone stream
-        const source = audioContext.createMediaStreamSource(stream);
-
-        processor.onaudioprocess = (event) => {
-          // Get raw audio data
-          const inputData = event.inputBuffer.getChannelData(0);
-
-          // Calculate audio level for visualization (always do this for UI feedback)
-          let sum = 0;
-          let maxSample = 0;
-          for (let i = 0; i < inputData.length; i++) {
-            const abs = Math.abs(inputData[i]);
-            sum += abs;
-            maxSample = Math.max(maxSample, abs);
-          }
-          const average = sum / inputData.length;
-          const level = Math.min(100, average * 1000);
-          setAudioLevel(level);
-
-          // Only send to WebSocket if we're listening and connected
-          if (!isListeningRef.current || websocketRef.current?.readyState !== WebSocket.OPEN) {
-            return;
-          }
-
-          // Debug logging - only log occasionally to avoid spam
-          if (audioChunkCounter < 10 || audioChunkCounter % 100 === 0) {
-            console.log(`🎤 PCM chunk #${audioChunkCounter}: level=${level.toFixed(2)}, max=${maxSample.toFixed(4)}`);
-          }
-
-          // Convert float32 to 16-bit PCM
-          const pcmData = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32767));
-          }
-
-          // Convert to base64
-          const uint8Array = new Uint8Array(pcmData.buffer);
-          const base64Data = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
-
-          // Send to Gemini
-          const audioMessage = {
-            realtime_input: {
-              audio: {
-                data: base64Data,
-                mimeType: "audio/pcm;rate=48000"  // Use the actual sample rate
-              }
-            }
-          };
-
-          audioChunkCounter++;
-
-          try {
-            websocketRef.current.send(JSON.stringify(audioMessage));
-            if (audioChunkCounter < 5) {
-              console.log(`🎤 📤 Sent PCM chunk #${audioChunkCounter}: ${pcmData.length} samples`);
+            const toolManager = connectionManagerRef.current.getToolManager();
+            if (toolManager) {
+              const toolResponses = await toolManager.executeToolCalls(toolCalls);
+              // The toolResponses should already be in the correct format (id, name, response)
+              connectionManagerRef.current.sendToolResponse(toolResponses);
             }
           } catch (error) {
-            console.error('🎤 Error sending PCM audio:', error);
+            console.error('Tool call execution error:', error);
+          }
+        }
+      },
+      onAudioChunk: (audioData: string, isFirstChunk: boolean) => {
+        // Play audio chunk immediately with current volume
+        connectionManagerRef.current?.playAudioChunk(audioData, isFirstChunk, volume);
+
+        // Set speaking state for first chunk
+        if (isFirstChunk) {
+          setIsSpeaking(true);
+        }
+      },
+      onTurnComplete: () => {
+        console.log('🔄 Turn complete - stopping speech and clearing audio buffer');
+        connectionManagerRef.current?.clearAudioBuffer(); // Clear any remaining audio chunks
+        setTimeout(() => {
+          setIsSpeaking(false);
+        }, 500);
+      }
+    };
+
+    connectionManagerRef.current = new GeminiConnectionManager(connectionCallbacks);
+    console.log('✅ Services initialized');
+  }, [addResponse, volume]);
+
+  // Connect to Gemini Live
+  const connectToGemini = useCallback(async () => {
+    if (!connectionManagerRef.current) {
+      console.error('❌ Connection manager not initialized');
+      return;
+    }
+
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'your_gemini_api_key_here') {
+      setError('Please add your Gemini API key to .env file');
+      return;
+    }
+
+    const systemStatus = {
+      overallHealth,
+      isActive,
+      currentCycle,
+      totalCyclesScheduled,
+      timeRemaining,
+      parts
+    };
+
+    const success = await connectionManagerRef.current.connect(apiKey, systemStatus, onStartWash);
+    if (!success) {
+      console.error('❌ Failed to connect to Gemini');
+    }
+  }, [overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts, onStartWash]);
+
+  // Initialize services on mount (only once)
+  useEffect(() => {
+    initializeServices();
+  }, []); // Remove dependencies to prevent re-initialization
+
+  // Connect to Gemini once services are ready
+  useEffect(() => {
+    if (connectionManagerRef.current && !isSDKReady) {
+      connectToGemini();
+    }
+  }, [connectionManagerRef.current, isSDKReady, connectToGemini]);
+
+  // Handle voice input toggle
+  const handleVoiceInput = useCallback(async () => {
+    if (!connectionManagerRef.current || !isSDKReady) {
+      setError('Please connect to Gemini Live first');
+      return;
+    }
+
+    if (!audioServiceRef.current) {
+      setError('Audio service not initialized');
+      return;
+    }
+
+    try {
+      if (isListening) {
+        console.log('🛑 Stopping voice input...');
+
+        // Stop recording
+        audioServiceRef.current.stopRecording();
+        setIsListening(false);
+
+        // Send audio stream end signal
+        connectionManagerRef.current.sendAudioStreamEnd();
+
+        // Clear transcript
+        clearTranscript();
+
+        console.log('🎤 Voice input stopped');
+      } else {
+        console.log('🎤 Starting voice input...');
+
+        // Setup audio callbacks
+        const audioCallbacks: AudioCallbacks = {
+          onAudioData: (base64Audio: string) => {
+            // Send audio to Gemini in real-time
+            connectionManagerRef.current?.sendAudio(base64Audio);
+          },
+          onAudioLevel: (level: number) => {
+            setAudioLevel(level);
+          },
+          onError: (errorMessage: string) => {
+            setError(errorMessage);
           }
         };
 
-        // Connect the audio nodes - CRITICAL: Connect to destination to make processor work
-        source.connect(processor);
-        processor.connect(audioContext.destination); // This forces the processor to run!
-
-        console.log('🎤 Connected source -> processor -> destination');
-        console.log('🎤 PCM capture setup complete');
-        console.log('🎤 Audio context sample rate:', audioContext.sampleRate);
-        console.log('🎤 Microphone is now capturing raw PCM audio...');
-        console.log('🎤 WARNING: You may hear echo - this is normal and required for processing');
+        // Start recording
+        const success = await audioServiceRef.current.startRecording(audioCallbacks);
+        if (success) {
+          setIsListening(true);
+          clearTranscript();
+          console.log('🎤 ✅ Voice input started');
+        } else {
+          setError('Failed to start voice input');
+        }
       }
-
-      return true;
-
     } catch (error) {
-      console.error('Error setting up audio recording:', error);
-      setError('Failed to access microphone. Please check permissions.');
-      return false;
+      console.error('Voice input error:', error);
+      setError('Voice input error: ' + (error as Error).message);
     }
-  }, []);
+  }, [isListening, isSDKReady, clearTranscript]);
 
-  
-  // Text input fallback
+  // Handle text input
   const handleTextInput = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!textInput.trim()) return;
+    if (!textInput.trim() || !connectionManagerRef.current) return;
 
     const command = textInput.trim();
     setTextInput('');
     setError(null);
 
-    // Send text as audio-like input to Gemini Live
-    if (websocketRef.current?.readyState === WebSocket.OPEN) {
-      const textMessage = {
-        realtime_input: {
-          text: command
-        }
-      };
+    // Add user message to chat
+    addResponse(command, 'user');
 
-      websocketRef.current.send(JSON.stringify(textMessage));
-    }
-  }, [textInput]);
+    // Send text to Gemini
+    connectionManagerRef.current.sendText(command);
+  }, [textInput, addResponse]);
 
-  // Toggle listening
-  const toggleListening = async () => {
-    console.log('🎙️ toggleListening called. isSDKReady:', isSDKReady, 'websocket state:', websocketRef.current?.readyState, 'isListening:', isListening);
+  // Handle text input from TextInput component
+  const handleTextInputSubmit = useCallback((text: string) => {
+    if (!connectionManagerRef.current) return;
 
-    // Resume audio context on user interaction (required by browsers)
-    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-      await audioContextRef.current.resume();
-      console.log('🔊 Audio context resumed due to user interaction');
-    }
-
-    if (!isSDKReady) {
-      setError('Gemini Live is not connected. Retrying...');
-      scheduleReconnect();
-      return;
-    }
-
-    if (isListening) {
-      // Stop listening
-      console.log('🛑 Stopping listening');
-      setIsListening(false);
-      isListeningRef.current = false;
-      setTranscript('');
-
-      // Send audioStreamEnd to let Gemini know we're done speaking
-      if (websocketRef.current?.readyState === WebSocket.OPEN) {
-        const audioStreamEndMessage = {
-          realtime_input: {
-            audio_stream_end: true
-          }
-        };
-        console.log('📤 Sending audioStreamEnd');
-        websocketRef.current.send(JSON.stringify(audioStreamEndMessage));
-      }
-
-      if (processorRef.current) {
-        // Handle both MediaRecorder and ScriptProcessorNode
-        const processor = processorRef.current;
-        if ('stop' in processor) {
-          // MediaRecorder
-          try {
-            (processor as MediaRecorder).stop();
-          } catch (e) {
-            console.log('MediaRecorder already stopped');
-          }
-        } else if ('disconnect' in processor) {
-          // ScriptProcessorNode
-          try {
-            (processor as ScriptProcessorNode).disconnect();
-          } catch (e) {
-            console.log('ScriptProcessor already disconnected');
-          }
-        }
-        processorRef.current = null;
-      }
-
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
-        mediaStreamRef.current = null;
-      }
-
-      setAudioLevel(0);
-    } else {
-      // Start listening
-      console.log('🎤 Starting listening...');
-      try {
-        const audioSetupSuccess = await setupAudioRecording();
-        console.log('🎤 Audio setup success:', audioSetupSuccess);
-        if (!audioSetupSuccess) {
-          console.log('❌ Audio setup failed, attempting to recover audio context...');
-
-          // Try to recover the audio context
-          try {
-            if (audioContextRef.current && audioContextRef.current.state === 'closed') {
-              console.log('🔄 Recreating closed audio context...');
-              audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-              console.log('🔊 Audio context recreated, state:', audioContextRef.current.state);
-
-              if (audioContextRef.current.state === 'suspended') {
-                await audioContextRef.current.resume();
-                console.log('🔊 Audio context resumed');
-              }
-
-              // Try audio setup again
-              const retrySuccess = await setupAudioRecording();
-              console.log('🔄 Audio setup retry success:', retrySuccess);
-              if (!retrySuccess) {
-                console.log('❌ Audio recovery failed completely');
-                setError('Audio recording failed. Please refresh the page.');
-                return;
-              }
-            } else {
-              console.log('❌ Audio context is in unexpected state,无法恢复');
-              setError('Audio system error. Please refresh the page.');
-              return;
-            }
-          } catch (error) {
-            console.error('💥 Audio recovery error:', error);
-            setError('Audio system error: ' + error.message);
-            return;
-          }
-        }
-
-        console.log('✅ Setting isListening to true');
-        setIsListening(true);
-        isListeningRef.current = true;
-        setTranscript('');
-        setError(null);
-
-        console.log('🎤 Microphone is now active - Speak clearly and the AI will respond');
-        console.log('🎤 Tip: Speak clearly into your microphone at a normal volume');
-      } catch (error) {
-        console.error('❌ Error starting audio recording:', error);
-        setError('Failed to start audio recording. Please check microphone permissions.');
-      }
-    }
-  };
+    addResponse(text, 'user');
+    connectionManagerRef.current.sendText(text);
+  }, [addResponse]);
 
   // Stop speaking
-  const stopSpeaking = () => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
-  };
-
-  // Clear chat
-  const clearChat = () => {
-    setResponses([]);
-    setError(null);
-  };
+  const stopSpeaking = useCallback(() => {
+    setIsSpeaking(false);
+  }, []);
 
   // Toggle input mode
-  const toggleInputMode = () => {
+  const toggleInputMode = useCallback(() => {
     setUseTextInput(!useTextInput);
     setError(null);
     if (isListening) {
-      toggleListening();
+      handleVoiceInput();
     }
-  };
+  }, [useTextInput, isListening, handleVoiceInput]);
 
-  // Cleanup
-  const cleanup = () => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    if (websocketRef.current) {
-      websocketRef.current.close();
-    }
-    if (processorRef.current) {
-      // Handle both MediaRecorder and ScriptProcessorNode
-      const processor = processorRef.current;
-      if ('stop' in processor) {
-        // MediaRecorder
-        (processor as MediaRecorder).stop();
-      } else if ('disconnect' in processor) {
-        // ScriptProcessorNode
-        (processor as ScriptProcessorNode).disconnect();
-      }
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-    }
-  };
+  // Toggle settings
+  const toggleSettings = useCallback(() => {
+    setIsSettingsOpen(!isSettingsOpen);
+  }, [isSettingsOpen]);
 
+  // Cleanup on unmount
   useEffect(() => {
-    initGeminiLive();
     return () => {
-      cleanup();
+      connectionManagerRef.current?.disconnect();
+      audioServiceRef.current?.cleanup();
     };
-  }, [initGeminiLive]);
+  }, []);
 
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="fixed bottom-24 right-6 w-96 bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-2xl shadow-2xl z-40"
+      className="fixed bottom-4 right-4 w-96 bg-gray-900/95 backdrop-blur-lg rounded-2xl shadow-2xl border border-gray-700/50 overflow-hidden z-[60]"
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-700/50">
-        <div className="flex items-center space-x-3">
-          <div className={`p-2 rounded-xl ${
-            isSDKReady
-              ? (isListening ? 'bg-red-500/20 border-red-500/30' : 'bg-blue-500/20 border-blue-500/30')
-              : 'bg-yellow-500/20 border-yellow-500/30'
-          } border`}>
-            <Bot className={`w-5 h-5 ${
-              !isSDKReady ? 'text-yellow-400' :
-              (isListening ? 'text-red-400' : 'text-blue-400')
-            }`} />
+      <div className="bg-gradient-to-r from-blue-600/20 to-purple-600/20 p-4 border-b border-gray-700/50">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className={`w-3 h-3 rounded-full ${
+              isSDKReady
+                ? (isListening ? 'bg-red-400 animate-pulse' : 'bg-green-400')
+                : 'bg-yellow-400 animate-pulse'
+            }`}></div>
+            <h3 className="text-white font-semibold">SmartWash AI</h3>
           </div>
-          <div>
-            <h3 className="font-semibold text-white">Gemini Live</h3>
-            <p className="text-xs text-gray-400">
-              {!isSDKReady ? 'Not Ready' :
-               (isListening ? 'Listening...' :
-                isSpeaking ? 'Speaking...' :
-                'Ready')}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-2">
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-            className="p-2 bg-gray-800/50 rounded-lg hover:bg-gray-700/50 transition-colors"
+          <button
+            onClick={toggleSettings}
+            className="text-gray-400 hover:text-white transition-colors"
           >
-            <Settings className="w-4 h-4 text-gray-400" />
-          </motion.button>
+            <Settings className="w-5 h-5" />
+          </button>
         </div>
       </div>
 
@@ -1480,256 +339,104 @@ Always respond conversationally and briefly. Do not send any test messages or gr
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mx-4 mt-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start space-x-2"
+          className="mx-4 mt-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg"
         >
-          <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
           <p className="text-xs text-red-400">{error}</p>
         </motion.div>
       )}
 
-      {/* SDK Status */}
-      {!isSDKReady && (
-        <div className="mx-4 mt-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-          <p className="text-xs text-yellow-400">
-            Connecting to Gemini Live API... (Auto-retrying every 5 seconds)
-          </p>
+      {/* Chat Messages */}
+      <div className="h-64 overflow-y-auto p-4 space-y-2">
+        <ChatMessages
+          responses={responses}
+          transcript={transcript}
+          isSDKReady={isSDKReady}
+          messagesEndRef={messagesEndRef}
+        />
+      </div>
+
+      {/* Audio Testing Panel */}
+      <div className="px-4 py-2 border-t border-gray-700/50">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => connectionManagerRef.current?.playTestTone()}
+            disabled={!isSDKReady}
+            className="px-3 py-1 bg-blue-500/20 rounded text-xs text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50"
+            title="Test basic audio system with 440Hz tone"
+          >
+            🔔 Test Tone
+          </button>
+          <button
+            onClick={() => connectionManagerRef.current?.playTestPCMAudio()}
+            disabled={!isSDKReady}
+            className="px-3 py-1 bg-orange-500/20 rounded text-xs text-orange-400 hover:bg-orange-500/30 transition-colors disabled:opacity-50"
+            title="Test PCM audio playback (simulates Gemini)"
+          >
+            🧪 Test PCM
+          </button>
+          <button
+            onClick={() => connectionManagerRef.current?.playTestWAV()}
+            disabled={!isSDKReady}
+            className="px-3 py-1 bg-green-500/20 rounded text-xs text-green-400 hover:bg-green-500/30 transition-colors disabled:opacity-50"
+            title="Play test_complete_response.wav file"
+          >
+            🎵 Test WAV
+          </button>
+        </div>
+      </div>
+
+      {/* Voice Level Indicator */}
+      {isListening && (
+        <div className="px-4 py-2">
+          <div className="flex items-center space-x-2">
+            <Volume2 className="w-4 h-4 text-blue-400" />
+            <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-400 to-blue-600 transition-all duration-100"
+                style={{ width: `${Math.max(0, Math.min(100, audioLevel))}%` }}
+              ></div>
+            </div>
+            <span className="text-xs text-gray-400 w-8">
+              {Math.round(Math.max(0, Math.min(100, audioLevel)))}%
+            </span>
+          </div>
         </div>
       )}
 
-      {/* Chat Messages */}
-      <div className="h-64 overflow-y-auto p-4 space-y-3">
-        {responses.length === 0 ? (
-          <div className="text-center py-8">
-            <Bot className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400 text-sm">
-              Click the mic button to start talking
-            </p>
-            <p className="text-gray-500 text-xs mt-2">
-              Ask me about system health, start wash cycles, or component status
-            </p>
-            {isSDKReady && (
-              <p className="text-green-400 text-xs mt-2">
-                ✅ Gemini Live API connected
-              </p>
-            )}
-          </div>
-        ) : (
-          responses.map((response, index) => (
-            <motion.div
-              key={index}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`flex ${response.type === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div className={`max-w-[80%] p-3 rounded-xl ${
-                response.type === 'user'
-                  ? 'bg-blue-500/20 border border-blue-500/30 text-blue-100'
-                  : 'bg-gray-800/50 border border-gray-700/30 text-gray-100'
-              }`}>
-                <p className="text-sm">{response.text}</p>
-                <p className="text-xs opacity-60 mt-1">
-                  {response.timestamp.toLocaleTimeString()}
-                </p>
-              </div>
-            </motion.div>
-          ))
-        )}
-
-        {/* Live transcript */}
-        {transcript && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex justify-start"
-          >
-            <div className="max-w-[80%] p-3 rounded-xl bg-gray-800/30 border border-gray-700/20 text-gray-300">
-              <p className="text-sm italic">{transcript}</p>
-            </div>
-          </motion.div>
-        )}
-
-        <div ref={messagesEndRef} />
-
-        
-        {/* Text Input Mode */}
-        {useTextInput && (
-          <motion.form
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            onSubmit={handleTextInput}
-            className="flex items-center space-x-2 p-3 bg-gray-800/30 border border-gray-700/20 rounded-lg"
-          >
-            <input
-              type="text"
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              placeholder="Type your message here..."
-              className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-400 text-sm"
-              disabled={isProcessing}
-            />
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              type="submit"
-              disabled={!textInput.trim() || isProcessing}
-              className="p-2 bg-blue-500/20 rounded-lg border border-blue-500/30 hover:bg-blue-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-              </svg>
-            </motion.button>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={toggleInputMode}
-              type="button"
-              className="p-2 bg-gray-700/30 rounded-lg border border-gray-600/30 hover:bg-gray-700/40 transition-colors"
-            >
-              <Mic className="w-4 h-4 text-gray-400" />
-            </motion.button>
-          </motion.form>
-        )}
-      </div>
-
-      {/* Controls */}
-      <div className="p-4 border-t border-gray-700/50">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            {/* Volume Control */}
-            <button
-              onClick={() => setVolume(volume > 0 ? 0 : 0.8)}
-              className="p-2 bg-gray-800/50 rounded-lg hover:bg-gray-700/50 transition-colors"
-            >
-              {volume > 0 ? (
-                <Volume2 className="w-4 h-4 text-gray-400" />
-              ) : (
-                <VolumeX className="w-4 h-4 text-gray-400" />
-              )}
-            </button>
-
-            {/* Clear Chat */}
-            <button
-              onClick={clearChat}
-              className="p-2 bg-gray-800/50 rounded-lg hover:bg-gray-700/50 transition-colors"
-            >
-              <Activity className="w-4 h-4 text-gray-400" />
-            </button>
-
-            
-            {/* Toggle Input Mode */}
-            <button
-              onClick={toggleInputMode}
-              className="p-2 bg-gray-800/50 rounded-lg hover:bg-gray-700/50 transition-colors"
-              title={useTextInput ? "Switch to voice input" : "Switch to text input"}
-            >
-              {useTextInput ? (
-                <Mic className="w-4 h-4 text-gray-400" />
-              ) : (
-                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-              )}
-            </button>
-          </div>
-
-          {/* Audio Level Indicator */}
-          {isListening && (
-            <div className="flex items-center space-x-2">
-              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-              <div className="w-16 h-2 bg-gray-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-green-400 to-green-600 transition-all duration-100"
-                  style={{ width: `${Math.max(0, Math.min(100, audioLevel || 0))}%` }}
-                ></div>
-              </div>
-              <span className="text-xs text-gray-400 w-8">{Math.round(Math.max(0, Math.min(100, audioLevel || 0)))}%</span>
-            </div>
-          )}
-
-          {/* Main Action Button */}
-          {!useTextInput ? (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={isListening ? toggleListening : (isSpeaking ? stopSpeaking : toggleListening)}
-              disabled={!isSDKReady}
-              className={`px-6 py-3 rounded-xl font-medium text-white transition-all duration-200 flex items-center space-x-2 ${
-                !isSDKReady
-                  ? 'bg-gray-600/50 cursor-not-allowed'
-                  : isListening
-                  ? 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700'
-                  : isSpeaking
-                  ? 'bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700'
-                  : 'bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600'
-              }`}
-            >
-              {!isSDKReady ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Connecting</span>
-                </>
-              ) : isListening ? (
-                <>
-                  <MicOff className="w-4 h-4" />
-                  <span>Stop</span>
-                </>
-              ) : isSpeaking ? (
-                <>
-                  <VolumeX className="w-4 h-4" />
-                  <span>Stop Speaking</span>
-                </>
-              ) : (
-                <>
-                  <Mic className="w-4 h-4" />
-                  <span>Start Live</span>
-                </>
-              )}
-            </motion.button>
-          ) : (
-            <div className="px-6 py-3 bg-blue-500/20 border border-blue-500/30 rounded-xl">
-              <span className="text-blue-400 font-medium text-sm">Text Input Mode Active</span>
-            </div>
-          )}
-        </div>
-      </div>
+      {/* Text Input Mode */}
+      {useTextInput ? (
+        <TextInput
+          textInput={textInput}
+          setTextInput={setTextInput}
+          onSubmit={handleTextInputSubmit}
+          onToggleMode={toggleInputMode}
+        />
+      ) : (
+        /* Control Buttons */
+        <ControlButtons
+          isListening={isListening}
+          isSpeaking={isSpeaking}
+          isSDKReady={isSDKReady}
+          volume={volume}
+          setVolume={setVolume}
+          onVoiceInput={handleVoiceInput}
+          onStopSpeaking={stopSpeaking}
+          onClearChat={clearResponses}
+          onToggleInputMode={toggleInputMode}
+        />
+      )}
 
       {/* Settings Panel */}
       {isSettingsOpen && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: 'auto' }}
-          exit={{ opacity: 0, height: 0 }}
-          className="p-4 border-t border-gray-700/50 space-y-3"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-400">Wake Word Detection</span>
-            <button
-              onClick={() => setWakeWordEnabled(!wakeWordEnabled)}
-              className={`w-12 h-6 rounded-full transition-colors ${
-                wakeWordEnabled ? 'bg-blue-500' : 'bg-gray-600'
-              }`}
-            >
-              <div className={`w-5 h-5 bg-white rounded-full transition-transform ${
-                wakeWordEnabled ? 'translate-x-6' : 'translate-x-0.5'
-              }`} />
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-400">Auto-start Commands</span>
-            <button
-              onClick={() => setAutoStartEnabled(!autoStartEnabled)}
-              className={`w-12 h-6 rounded-full transition-colors ${
-                autoStartEnabled ? 'bg-blue-500' : 'bg-gray-600'
-              }`}
-            >
-              <div className={`w-5 h-5 bg-white rounded-full transition-transform ${
-                autoStartEnabled ? 'translate-x-6' : 'translate-x-0.5'
-              }`} />
-            </button>
-          </div>
-        </motion.div>
+        <SettingsPanel
+          wakeWordEnabled={wakeWordEnabled}
+          setWakeWordEnabled={setWakeWordEnabled}
+          autoStartEnabled={autoStartEnabled}
+          setAutoStartEnabled={setAutoStartEnabled}
+        />
       )}
     </motion.div>
   );
-}
+};
+
+export default GeminiLive;

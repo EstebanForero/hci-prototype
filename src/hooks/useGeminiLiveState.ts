@@ -66,6 +66,10 @@ export function useGeminiLiveState() {
     setState(prev => ({ ...prev, responses: [] }));
   }, []);
 
+  const clearTranscript = useCallback(() => {
+    updateState({ transcript: '' });
+  }, [updateState]);
+
   const setVolume = useCallback((volume: number) => {
     updateState({ volume });
   }, [updateState]);
@@ -149,6 +153,7 @@ export function useGeminiLiveState() {
     setTranscript,
     addResponse,
     clearResponses,
+    clearTranscript,
     setVolume,
     setSettingsOpen,
     setWakeWordEnabled,
