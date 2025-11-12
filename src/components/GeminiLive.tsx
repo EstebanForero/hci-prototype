@@ -172,16 +172,19 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         setTranscript(text);
       },
       onToolCall: async (toolCalls: any[]) => {
+        console.log('🛠️ Received tool calls:', toolCalls);
         if (connectionManagerRef.current) {
           try {
             const toolManager = connectionManagerRef.current.getToolManager();
             if (toolManager) {
+              console.log('🔨 Executing tool calls...');
               const toolResponses = await toolManager.executeToolCalls(toolCalls);
+              console.log('✅ Tool responses:', toolResponses);
               // The toolResponses should already be in the correct format (id, name, response)
               connectionManagerRef.current.sendToolResponse(toolResponses);
             }
           } catch (error) {
-            console.error('Tool call execution error:', error);
+            console.error('❌ Tool call execution error:', error);
           }
         }
       },
@@ -263,9 +266,7 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         setIsListening(false);
 
         // Send audio stream end signal
-        console.log('🛑 Sending audio stream end signal...');
-        const success = connectionManagerRef.current.sendAudioStreamEnd();
-        console.log('📤 Audio stream end sent:', success);
+        connectionManagerRef.current.sendAudioStreamEnd();
 
         // Clear transcript
         clearTranscript();
@@ -288,14 +289,11 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         };
 
         // Start recording
-        console.log('🎤 Starting voice recording...');
         const success = await audioServiceRef.current.startRecording(audioCallbacks);
         if (success) {
-          console.log('✅ Voice recording started successfully');
           setIsListening(true);
           clearTranscript();
         } else {
-          console.error('❌ Failed to start voice recording');
           setError('Failed to start voice input');
         }
       }

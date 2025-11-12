@@ -62,6 +62,8 @@ export class ToolExecutionManager {
     const args = toolCall.args || toolCall.function?.args || {};
     const callId = toolCall.id || toolCall.function?.id || 'unknown';
 
+    console.log(`🔧 Executing tool: ${functionName} with args:`, args);
+
     // Validate tool call parameters
     const validation = GeminiValidator.validateToolCall(functionName, args);
     if (!validation.isValid) {
@@ -85,7 +87,9 @@ export class ToolExecutionManager {
 
       switch (functionName) {
         case 'start_wash':
+          console.log('🧺 Starting wash execution...');
           result = await this.executeStartWash(args as StartWashParams);
+          console.log('✅ Wash execution result:', result);
           break;
 
         case 'stop_wash':
@@ -212,22 +216,25 @@ export class ToolExecutionManager {
 
     console.log(`🧺 Starting smart wash: ${clothing_type}, ${smartTemp} water, ${smartCycle} cycle`);
 
-    // Execute the wash start
+    // Execute the wash start - convert to format expected by App.tsx
     const washConfig: WashConfig = {
-      clothing_type,
-      temperature_setting: smartTemp,
-      cycle: smartCycle,
+      program: smartCycle.charAt(0).toUpperCase() + smartCycle.slice(1), // Capitalize first letter
+      temperature: this.convertTemperatureToNumber(smartTemp),
+      spinSpeed: this.getDefaultSpinSpeed(smartCycle),
       duration: finalDuration,
-      extra_rinse,
-      pre_soak
+      waterLevel: this.getDefaultWaterLevel(smartCycle),
+      extraRinse: extra_rinse,
+      preWash: pre_soak
     };
 
+    console.log('📞 Calling onStartWash callback with config:', washConfig);
     this.callbacks.onStartWash(washConfig);
 
     const responseMessage = recommendations.length > 0
       ? `Perfect! I've started your wash with smart settings: ${recommendations.join(', ')}.${extra_rinse ? ' Added extra rinse.' : ''}${pre_soak ? ' Added pre-soak.' : ''}`
       : `Wash cycle started successfully with ${smartTemp} water and ${smartCycle} cycle.`;
 
+    console.log('📤 Returning wash response:', responseMessage);
     return {
       success: true,
       settings: washConfig,
@@ -455,6 +462,46 @@ export class ToolExecutionManager {
         this.callbacks.onStartWash(washConfig);
       }
     }
+  }
+
+  /**
+   * Convert temperature string to number
+   */
+  private convertTemperatureToNumber(temp: string): number {
+    const tempMap: Record<string, number> = {
+      'cold': 20,
+      'warm': 40,
+      'hot': 60
+    };
+    return tempMap[temp.toLowerCase()] || 40;
+  }
+
+  /**
+   * Get default spin speed for cycle type
+   */
+  private getDefaultSpinSpeed(cycle: string): number {
+    const speedMap: Record<string, number> = {
+      'quick': 800,
+      'delicates': 600,
+      'eco': 1000,
+      'normal': 1000,
+      'heavy': 1200
+    };
+    return speedMap[cycle.toLowerCase()] || 1000;
+  }
+
+  /**
+   * Get default water level for cycle type
+   */
+  private getDefaultWaterLevel(cycle: string): 'low' | 'medium' | 'high' {
+    const levelMap: Record<string, 'low' | 'medium' | 'high'> = {
+      'quick': 'low',
+      'delicates': 'medium',
+      'eco': 'low',
+      'normal': 'medium',
+      'heavy': 'high'
+    };
+    return levelMap[cycle.toLowerCase()] || 'medium';
   }
 }
 

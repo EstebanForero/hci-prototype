@@ -176,9 +176,6 @@ export class GeminiConnectionManager {
    * Handle incoming WebSocket messages
    */
   private async handleMessage(message: any) {
-    // Log all incoming messages for debugging
-    console.log('📥 Received WebSocket message:', Object.keys(message));
-
     // Validate message structure
     const validation = GeminiValidator.validateWebSocketMessage(message);
     if (!validation.isValid) {
@@ -204,7 +201,7 @@ export class GeminiConnectionManager {
 
     // Handle tool calls
     if (content.toolCalls.length > 0) {
-      console.log(`🔧 Processing ${content.toolCalls.length} tool calls`);
+      console.log(`🔧 Processing ${content.toolCalls.length} tool calls:`, content.toolCalls.map(tc => tc.name || tc.function?.name));
       this.callbacks.onToolCall(content.toolCalls);
     }
 
@@ -219,11 +216,12 @@ export class GeminiConnectionManager {
 
     // Handle audio responses - REAL-TIME STREAMING
     if (content.audioParts.length > 0) {
-      console.log(`🎉 Found ${content.audioParts.length} audio chunk(s)!`);
       content.audioParts.forEach((audioData, index) => {
-        // Temporarily disable audio validation for debugging
-        console.log(`🔊 🎵 REAL-TIME AUDIO CHUNK ${index + 1}: ${audioData.length} chars`);
-        this.callbacks.onAudioChunk(audioData, index === 0);
+        // Validate each audio chunk
+        const audioValidation = this.audioProcessor.validateBase64Audio(audioData);
+        if (audioValidation) {
+          this.callbacks.onAudioChunk(audioData, index === 0);
+        }
       });
     }
 
@@ -322,11 +320,11 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
       return false;
     }
 
-    // Temporarily disable audio validation for debugging
-    // if (!this.audioProcessor.validateBase64Audio(base64Audio)) {
-    //   console.error('❌ Invalid audio data, not sending');
-    //   return false;
-    // }
+    // Validate audio data before sending
+    if (!this.audioProcessor.validateBase64Audio(base64Audio)) {
+      console.error('❌ Invalid audio data, not sending');
+      return false;
+    }
 
     const audioMessage = {
       realtime_input: {
@@ -339,7 +337,6 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
 
     try {
       this.wsManager.websocket.send(JSON.stringify(audioMessage));
-      console.log('📤 Sent audio chunk:', base64Audio.length, 'characters');
       return true;
     } catch (error) {
       console.error('Error sending audio:', error);
