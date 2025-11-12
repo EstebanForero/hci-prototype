@@ -29,6 +29,7 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
   overallHealth,
   totalCycles,
   onStartWash,
+  onStopWash,
   isActive,
   currentCycle,
   totalCyclesScheduled,
@@ -179,11 +180,11 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       parts
     };
 
-    const success = await connectionManagerRef.current.connect(apiKey, systemStatus, onStartWash);
+    const success = await connectionManagerRef.current.connect(apiKey, systemStatus, onStartWash, onStopWash);
     if (!success) {
       console.error('❌ Failed to connect to Gemini');
     }
-  }, [overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts, onStartWash]);
+  }, [overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts, onStartWash, onStopWash]);
 
   // Initialize services on mount (only once)
   useEffect(() => {

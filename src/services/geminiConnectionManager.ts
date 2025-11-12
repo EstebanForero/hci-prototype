@@ -17,6 +17,7 @@ export interface ConnectionCallbacks {
   onToolCall: (toolCalls: any[]) => void;
   onAudioChunk: (audioData: string, isFirstChunk: boolean) => void;
   onTurnComplete: () => void;
+  onStopWash?: (reason?: string) => void;
 }
 
 export interface SystemStatus {
@@ -35,7 +36,7 @@ export class GeminiConnectionManager {
   private audioContext: AudioContext | null = null;
   private isConnected: boolean = false;
 
-  constructor(private callbacks: ConnectionCallbacks) {}
+  constructor(private callbacks: ConnectionCallbacks, private onStopWashCallback?: (reason?: string) => void) {}
 
   /**
    * Initialize audio context
@@ -71,13 +72,17 @@ export class GeminiConnectionManager {
   async connect(
     apiKey: string,
     systemStatus: SystemStatus,
-    onStartWash: (config: any) => void
+    onStartWash: (config: any) => void,
+    onStopWash?: (reason?: string) => void
   ): Promise<boolean> {
     try {
       if (!apiKey || apiKey === 'your_gemini_api_key_here') {
         this.callbacks.onError('Please add your Gemini API key to .env file');
         return false;
       }
+
+      // Store the stop callback
+      this.onStopWashCallback = onStopWash;
 
       // Initialize audio context first
       const audioReady = await this.initializeAudioContext();
@@ -90,6 +95,11 @@ export class GeminiConnectionManager {
       this.toolManager = createToolExecutionManager({
         onStartWash: (config: any) => {
           onStartWash(config);
+        },
+        onStopWash: (reason?: string) => {
+          console.log(`🛑 Wash cycle stopped${reason ? ` - ${reason}` : ''}`);
+          // Call the main app's stop functionality
+          this.onStopWashCallback?.(reason);
         },
         onToolExecuted: (toolName: string, result: any) => {
           console.log(`Tool ${toolName} executed:`, result);
@@ -443,6 +453,12 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
       return;
     }
 
+    // Limit buffer size to prevent memory issues (increase limit)
+    if (this.audioBuffer.length > 500) {
+      console.log('🔊 Buffer overflow protection: trimming buffer from', this.audioBuffer.length, 'to 500 chunks');
+      this.audioBuffer = this.audioBuffer.slice(-500); // Keep last 500 chunks
+    }
+
     const base64Audio = this.audioBuffer.shift()!; // Get next chunk
 
     try {
@@ -457,14 +473,15 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
       const audioBuffer = this.audioContext.createBuffer(1, pcmData.length, 24000);
       const channelData = audioBuffer.getChannelData(0);
 
-      // Convert 16-bit PCM to float32
+      // Convert 16-bit PCM to float32 with slight attenuation to prevent clipping
+      const attenuationFactor = 0.8; // Reduce volume slightly to prevent distortion
       for (let i = 0; i < pcmData.length; i++) {
-        channelData[i] = pcmData[i] / 32768.0;
+        channelData[i] = (pcmData[i] / 32768.0) * attenuationFactor;
       }
 
       // Create gain node for volume control
       const gainNode = this.audioContext.createGain();
-      gainNode.gain.value = volume * 0.5;
+      gainNode.gain.value = volume * 0.3; // Lower overall volume to prevent distortion
 
       // Create and configure audio source
       const source = this.audioContext.createBufferSource();
@@ -472,29 +489,42 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
       source.connect(gainNode);
       gainNode.connect(this.audioContext.destination);
 
-      // Calculate timing for next chunk
+      // Use Web Audio API scheduling instead of setTimeout for precise timing
       const chunkDuration = audioBuffer.duration; // Duration in seconds
       const currentTime = this.audioContext.currentTime;
 
-      // Schedule this chunk to play
-      const playTime = this.nextPlayTime !== null ? this.nextPlayTime : currentTime;
+      // Schedule this chunk to play at the correct time
+      const playTime = this.nextPlayTime !== null ? this.nextPlayTime : currentTime + 0.01; // Small initial delay
       source.start(playTime);
 
-      // Calculate when the next chunk should play
-      this.nextPlayTime = playTime + chunkDuration;
+      // Calculate when the next chunk should play (with tiny gap to prevent overlap)
+      this.nextPlayTime = playTime + chunkDuration + 0.001; // 1ms gap between chunks
 
-      // Schedule the next chunk
+      // Schedule the next chunk using the Web Audio API timing
       source.onended = () => {
-        // Small delay between chunks to prevent overlap
-        setTimeout(() => {
-          this.playNextBufferedChunk(volume);
-        }, 10);
+        // Use setTimeout only as a fallback for reliability
+        if (this.audioBuffer.length > 0) {
+          setTimeout(() => {
+            this.playNextBufferedChunk(volume);
+          }, 5); // Very small delay
+        } else {
+          // No more chunks
+          this.isPlayingSequence = false;
+          this.nextPlayTime = null;
+        }
       };
 
     } catch (error) {
       console.error('❌ Error playing buffered audio chunk:', error);
       // Continue with next chunk even if this one fails
-      this.playNextBufferedChunk(volume);
+      if (this.audioBuffer.length > 0) {
+        setTimeout(() => {
+          this.playNextBufferedChunk(volume);
+        }, 10);
+      } else {
+        this.isPlayingSequence = false;
+        this.nextPlayTime = null;
+      }
     }
   }
 

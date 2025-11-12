@@ -255,6 +255,7 @@ function App() {
           overallHealth={overallHealth}
           totalCycles={totalCyclesRemaining}
           onStartWash={handleConfigStart}
+          onStopWash={handleStop}
           isActive={isActive}
           currentCycle={currentCycle}
           totalCyclesScheduled={totalCycles}

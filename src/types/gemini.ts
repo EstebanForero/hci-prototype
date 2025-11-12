@@ -14,6 +14,7 @@ export interface GeminiLiveProps {
   overallHealth: number;
   totalCycles: number;
   onStartWash: (config: any) => void;
+  onStopWash?: (reason?: string) => void;
   isActive: boolean;
   currentCycle: number;
   totalCyclesScheduled: number;
