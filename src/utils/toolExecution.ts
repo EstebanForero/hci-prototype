@@ -17,6 +17,7 @@ import {
   ComponentStatesResponse,
   WashConfig
 } from '../types/gemini';
+import { GeminiValidator } from './validation';
 
 export interface ToolExecutionCallbacks {
   onStartWash: (config: WashConfig) => void;
@@ -57,6 +58,24 @@ export class ToolExecutionManager {
     const functionName = toolCall.name || toolCall.function?.name || 'unknown';
     const args = toolCall.args || toolCall.function?.args || {};
     const callId = toolCall.id || toolCall.function?.id || 'unknown';
+
+    // Validate tool call parameters
+    const validation = GeminiValidator.validateToolCall(functionName, args);
+    if (!validation.isValid) {
+      const errorMessage = validation.error || 'Invalid tool call parameters';
+      console.error(`❌ Tool validation failed for ${functionName}:`, errorMessage);
+
+      const errorResponse: ToolResponse = {
+        id: callId || 'unknown',
+        name: functionName,
+        response: {
+          error: `Validation failed: ${errorMessage}`
+        }
+      };
+
+      this.callbacks.onToolError?.(functionName, errorMessage);
+      return errorResponse;
+    }
 
     try {
       let result: any;

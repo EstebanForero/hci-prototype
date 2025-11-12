@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Play, Settings, Pause, RotateCcw, Power } from 'lucide-react';
+import { Play, Settings, Pause, Power } from 'lucide-react';
 
 interface ControlPanelProps {
   isActive: boolean;

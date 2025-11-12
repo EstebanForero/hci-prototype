@@ -79,10 +79,6 @@ export class GeminiWebSocketManager {
     this.callbacks.onStateChange(this.state);
   }
 
-  private generateSessionId(): string {
-    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-
   private createSetupMessage(): GeminiSetupMessage {
     const { model, voiceName, systemInstruction, functionDeclarations } = this.config;
 
@@ -106,17 +102,7 @@ export class GeminiWebSocketManager {
         },
         tools: [{
           function_declarations: functionDeclarations || []
-        }],
-        // Enable automatic VAD for continuous audio processing
-        realtime_input_config: {
-          automatic_activity_detection: {
-            disabled: false, // Enable automatic VAD
-            start_of_speech_sensitivity: "START_SENSITIVITY_LOW",
-            end_of_speech_sensitivity: "END_SENSITIVITY_LOW",
-            prefix_padding_ms: 100,
-            silence_duration_ms: 2000
-          }
-        }
+        }]
       }
     };
   }
@@ -428,7 +414,7 @@ export class GeminiWebSocketManager {
   /**
    * Send audio data to Gemini
    */
-  public sendAudio(base64Audio: string, mimeType: string = "audio/pcm;rate=16000"): boolean {
+  public sendAudio(base64Audio: string): boolean {
     // If connection is ready, send immediately
     if (this.isConnectedAndReady && this.websocket && this.websocket.readyState === WebSocket.OPEN) {
       return this.sendAudioChunk(base64Audio);

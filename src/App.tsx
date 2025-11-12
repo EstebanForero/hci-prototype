@@ -35,20 +35,20 @@ function App() {
   const [timeRemaining, setTimeRemaining] = useState('0:00');
   const [washConfig, setWashConfig] = useState<WashConfiguration | null>(null);
 
-  const [parts, setParts] = useState<PartStats[]>([
+  const parts: PartStats[] = [
     { name: "Motor", health: 85, status: 'optimal', cyclesRemaining: 450 },
     { name: "Drum", health: 92, status: 'optimal', cyclesRemaining: 820 },
     { name: "Pump", health: 67, status: 'warning', cyclesRemaining: 234 },
     { name: "Heating Element", health: 78, status: 'optimal', cyclesRemaining: 567 },
     { name: "Control Board", health: 95, status: 'optimal', cyclesRemaining: 1200 },
     { name: "Water Inlet", health: 71, status: 'warning', cyclesRemaining: 189 },
-  ]);
+  ];
 
   const overallHealth = Math.round(parts.reduce((sum, part) => sum + part.health, 0) / parts.length);
   const totalCyclesRemaining = parts.reduce((sum, part) => sum + part.cyclesRemaining, 0);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
 
     if (isActive && washConfig) {
       interval = setInterval(() => {

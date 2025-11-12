@@ -3,6 +3,8 @@
  * Helper functions for audio processing and conversion
  */
 
+import { GeminiValidator } from './validation';
+
 /**
  * Convert Float32Array to 16-bit PCM
  * Used for Gemini Live audio input
@@ -107,6 +109,13 @@ export function resampleTo16kHz(audioData: Float32Array, inputSampleRate: number
 export function extractAudioFromMessage(message: any): string[] {
   const foundAudio: string[] = [];
 
+  // Validate message structure first
+  const validation = GeminiValidator.validateWebSocketMessage(message);
+  if (!validation.isValid) {
+    console.error('❌ Invalid message for audio extraction:', validation.error);
+    return foundAudio;
+  }
+
   // Look for audio in server_content.model_turn.parts (like Rust code)
   if (message.server_content?.model_turn?.parts) {
     for (let i = 0; i < message.server_content.model_turn.parts.length; i++) {
@@ -115,7 +124,6 @@ export function extractAudioFromMessage(message: any): string[] {
       // Check for inline_data with audio MIME type (like Rust implementation)
       if (part.inline_data) {
         const mimeType = part.inline_data.mime_type || '';
-        console.log(`🔍 Part ${i} MIME type: ${mimeType}`);
 
         // Check if it's audio with PCM at 24kHz (matching Rust logic)
         if (mimeType.includes('audio/') &&
@@ -123,8 +131,13 @@ export function extractAudioFromMessage(message: any): string[] {
             mimeType.includes('rate=24000')) {
 
           if (part.inline_data.data && typeof part.inline_data.data === 'string') {
-            foundAudio.push(part.inline_data.data);
-            console.log(`🎵 Found audio at model_turn.parts[${i}].inline_data.data: ${part.inline_data.data.length} chars`);
+            // Validate the audio data before adding
+            if (GeminiValidator.validateBase64Audio(part.inline_data.data).isValid) {
+              foundAudio.push(part.inline_data.data);
+              console.log(`🎵 Found validated audio at model_turn.parts[${i}].inline_data.data: ${part.inline_data.data.length} chars`);
+            } else {
+              console.error(`❌ Invalid audio data at model_turn.parts[${i}], skipping`);
+            }
           }
         }
       }

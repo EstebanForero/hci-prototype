@@ -6,8 +6,9 @@
 import { createGeminiWebSocket } from '../utils/geminiWebSocket';
 import { createToolExecutionManager } from '../utils/toolExecution';
 import { createFunctionDeclarations } from '../utils/toolExecution';
-import { extractAudioFromMessage } from '../utils/audioCapture';
 import { AudioStreamManager } from '../utils/audioStreamManager';
+import { AudioProcessor } from '../utils/audioProcessor';
+import { GeminiValidator } from '../utils/validation';
 
 export interface ConnectionCallbacks {
   onReady: () => void;
@@ -34,9 +35,16 @@ export class GeminiConnectionManager {
   private audioStreamManager: AudioStreamManager | null = null;
   private toolManager: any = null;
   private audioContext: AudioContext | null = null;
+  private audioProcessor: AudioProcessor;
   private isConnected: boolean = false;
 
-  constructor(private callbacks: ConnectionCallbacks, private onStopWashCallback?: (reason?: string) => void) {}
+  constructor(private callbacks: ConnectionCallbacks, private onStopWashCallback?: (reason?: string) => void) {
+    this.audioProcessor = new AudioProcessor({
+      volume: 0.5,
+      attenuationFactor: 0.9,
+      sampleRate: 24000
+    });
+  }
 
   /**
    * Initialize audio context
@@ -76,8 +84,16 @@ export class GeminiConnectionManager {
     onStopWash?: (reason?: string) => void
   ): Promise<boolean> {
     try {
-      if (!apiKey || apiKey === 'your_gemini_api_key_here') {
-        this.callbacks.onError('Please add your Gemini API key to .env file');
+      // Validate inputs
+      const keyValidation = GeminiValidator.validateApiKey(apiKey);
+      if (!keyValidation.isValid) {
+        this.callbacks.onError(keyValidation.error || 'Invalid API key');
+        return false;
+      }
+
+      const statusValidation = GeminiValidator.validateSystemStatus(systemStatus);
+      if (!statusValidation.isValid) {
+        this.callbacks.onError(statusValidation.error || 'Invalid system status');
         return false;
       }
 
@@ -155,7 +171,12 @@ export class GeminiConnectionManager {
    * Handle incoming WebSocket messages
    */
   private async handleMessage(message: any) {
-    console.log('🔍 Processing Gemini response:', JSON.stringify(message, null, 2));
+    // Validate message structure
+    const validation = GeminiValidator.validateWebSocketMessage(message);
+    if (!validation.isValid) {
+      console.error('❌ Invalid message:', validation.error);
+      return;
+    }
 
     // Handle setup completion
     if (message.setup_complete || message.setupComplete) {
@@ -192,33 +213,15 @@ export class GeminiConnectionManager {
     if (content.audioParts.length > 0) {
       console.log(`🎉 Found ${content.audioParts.length} audio chunk(s)!`);
       content.audioParts.forEach((audioData, index) => {
-        console.log(`🔊 🎵 REAL-TIME AUDIO CHUNK ${index + 1}: ${audioData.length} chars`);
-        this.callbacks.onAudioChunk(audioData, index === 0);
-      });
-    } else {
-      console.log('🔍 No audio chunks found in this message');
-      // Log available keys for debugging
-      console.log('🔍 Available message keys:', Object.keys(message));
-
-      // Look for any potential audio data in different formats
-      const messageStr = JSON.stringify(message);
-      if (messageStr.includes('data') || messageStr.includes('audio')) {
-        console.log('🔍 Message contains potential audio data - checking deeper...');
-
-        // Try to find any base64-like strings
-        const base64Pattern = /[A-Za-z0-9+/]{40,}={0,2}/g;
-        const matches = messageStr.match(base64Pattern);
-        if (matches && matches.length > 0) {
-          console.log(`🔍 Found ${matches.length} potential base64 strings`);
-          matches.forEach((match, i) => {
-            console.log(`🔍 Base64 ${i + 1}: ${match.substring(0, 50)}... (${match.length} chars)`);
-          });
-
-          // Try to play the first match as audio
-          console.log('🧪 Trying to play first base64 match as audio...');
-          this.callbacks.onAudioChunk(matches[0], true);
+        // Validate each audio chunk
+        const audioValidation = this.audioProcessor.validateBase64Audio(audioData);
+        if (audioValidation) {
+          console.log(`🔊 🎵 REAL-TIME AUDIO CHUNK ${index + 1}: ${audioData.length} chars`);
+          this.callbacks.onAudioChunk(audioData, index === 0);
+        } else {
+          console.error(`❌ Invalid audio chunk ${index + 1}, skipping`);
         }
-      }
+      });
     }
 
     // Handle transcription if available
@@ -315,6 +318,12 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
       return false;
     }
 
+    // Validate audio data before sending
+    if (!this.audioProcessor.validateBase64Audio(base64Audio)) {
+      console.error('❌ Invalid audio data, not sending');
+      return false;
+    }
+
     const audioMessage = {
       realtime_input: {
         audio: {
@@ -396,7 +405,7 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
    * Send tool response
    */
   sendToolResponse(responses: any[]): boolean {
-    if (!this.isConnected || !this.wsManager?.websocket?.readyState === WebSocket.OPEN) {
+    if (!this.isConnected || !this.wsManager?.websocket || this.wsManager.websocket.readyState !== WebSocket.OPEN) {
       console.error('WebSocket not ready for tool response');
       return false;
     }
@@ -453,7 +462,7 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
       return;
     }
 
-    // Limit buffer size to prevent memory issues (increase limit)
+    // Limit buffer size to prevent memory issues
     if (this.audioBuffer.length > 500) {
       console.log('🔊 Buffer overflow protection: trimming buffer from', this.audioBuffer.length, 'to 500 chunks');
       this.audioBuffer = this.audioBuffer.slice(-500); // Keep last 500 chunks
@@ -461,48 +470,52 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
 
     const base64Audio = this.audioBuffer.shift()!; // Get next chunk
 
+    // Validate audio data
+    const chunkInfo = this.audioProcessor.getAudioChunkInfo(base64Audio);
+    if (!chunkInfo.isValid) {
+      console.error('❌ Invalid audio chunk data, skipping');
+      this.playNextBufferedChunk(volume);
+      return;
+    }
+
     try {
-      // Convert base64 to PCM data
-      const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+      // Convert base64 to PCM using the optimized processor
+      const pcmData = this.audioProcessor.base64ToPCM(base64Audio);
+      if (pcmData.length === 0) {
+        console.error('❌ Empty PCM data, skipping chunk');
+        this.playNextBufferedChunk(volume);
+        return;
       }
 
-      const pcmData = new Int16Array(bytes.buffer.slice(0, bytes.length));
-      const audioBuffer = this.audioContext.createBuffer(1, pcmData.length, 24000);
-      const channelData = audioBuffer.getChannelData(0);
-
-      // Convert 16-bit PCM to float32 with slight attenuation to prevent clipping
-      const attenuationFactor = 0.8; // Reduce volume slightly to prevent distortion
-      for (let i = 0; i < pcmData.length; i++) {
-        channelData[i] = (pcmData[i] / 32768.0) * attenuationFactor;
+      // Create audio buffer using the processor
+      const audioBuffer = this.audioProcessor.pcmToAudioBuffer(pcmData, this.audioContext);
+      if (!audioBuffer) {
+        console.error('❌ Failed to create audio buffer, skipping chunk');
+        this.playNextBufferedChunk(volume);
+        return;
       }
 
-      // Create gain node for volume control
-      const gainNode = this.audioContext.createGain();
-      gainNode.gain.value = volume * 0.3; // Lower overall volume to prevent distortion
+      // Play the audio buffer using the processor
+      const source = this.audioProcessor.playAudioBuffer(audioBuffer, this.audioContext, volume);
+      if (!source) {
+        console.error('❌ Failed to play audio buffer, skipping chunk');
+        this.playNextBufferedChunk(volume);
+        return;
+      }
 
-      // Create and configure audio source
-      const source = this.audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(gainNode);
-      gainNode.connect(this.audioContext.destination);
-
-      // Use Web Audio API scheduling instead of setTimeout for precise timing
-      const chunkDuration = audioBuffer.duration; // Duration in seconds
+      // Calculate timing for next chunk
+      const chunkDuration = audioBuffer.duration;
       const currentTime = this.audioContext.currentTime;
 
       // Schedule this chunk to play at the correct time
-      const playTime = this.nextPlayTime !== null ? this.nextPlayTime : currentTime + 0.01; // Small initial delay
+      const playTime = this.nextPlayTime !== null ? this.nextPlayTime : currentTime + 0.01;
       source.start(playTime);
 
       // Calculate when the next chunk should play (with tiny gap to prevent overlap)
       this.nextPlayTime = playTime + chunkDuration + 0.001; // 1ms gap between chunks
 
-      // Schedule the next chunk using the Web Audio API timing
+      // Schedule the next chunk
       source.onended = () => {
-        // Use setTimeout only as a fallback for reliability
         if (this.audioBuffer.length > 0) {
           setTimeout(() => {
             this.playNextBufferedChunk(volume);
@@ -513,6 +526,9 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
           this.nextPlayTime = null;
         }
       };
+
+      // Log chunk info for debugging
+      console.log(`🔊 Playing chunk: ${pcmData.length} samples, ${chunkDuration.toFixed(3)}s duration`);
 
     } catch (error) {
       console.error('❌ Error playing buffered audio chunk:', error);
@@ -556,68 +572,7 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
   private isPlayingSequence: boolean = false;
   private nextPlayTime: number | null = null;
 
-  /**
-   * Fallback audio chunk player (using the working logic from monolithic version)
-   */
-  private playAudioChunkFallback(base64Audio: string, isFirstChunk: boolean, volume: number): void {
-    if (!this.audioContext) return;
-
-    // Stop any currently playing audio to prevent overlap
-    if (this.currentAudioSource) {
-      try {
-        this.currentAudioSource.stop();
-        this.currentAudioSource.disconnect();
-      } catch (e) {
-        // Ignore errors from already stopped sources
-      }
-      this.currentAudioSource = null;
-    }
-
-    try {
-      const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      const pcmData = new Int16Array(bytes.buffer.slice(0, bytes.length));
-      const audioBuffer = this.audioContext.createBuffer(1, pcmData.length, 24000);
-      const channelData = audioBuffer.getChannelData(0);
-
-      for (let i = 0; i < pcmData.length; i++) {
-        channelData[i] = pcmData[i] / 32768.0;
-      }
-
-      // Apply gentle fade-in only for the very first chunk
-      if (isFirstChunk && audioBuffer.length > 100) {
-        const fadeLength = Math.min(100, audioBuffer.length);
-        for (let i = 0; i < fadeLength; i++) {
-          const fadeGain = i / fadeLength;
-          channelData[i] *= fadeGain;
-        }
-      }
-
-      const gainNode = this.audioContext.createGain();
-      gainNode.gain.value = volume * 0.5; // Moderate volume
-
-      const source = this.audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(gainNode);
-      gainNode.connect(this.audioContext.destination);
-
-      // Keep reference to prevent overlap
-      this.currentAudioSource = source;
-
-      source.onended = () => {
-        this.currentAudioSource = null;
-      };
-
-      source.start();
-    } catch (error) {
-      console.error('❌ Error in fallback audio playback:', error);
-    }
-  }
-
+  
   /**
    * Get connection status
    */
