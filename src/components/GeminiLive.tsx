@@ -86,10 +86,11 @@ export default function GeminiLive({
         return;
       }
 
-      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      // Check localStorage first, then fall back to environment variable
+      const apiKey = localStorage.getItem('VITE_GEMINI_API_KEY') || import.meta.env.VITE_GEMINI_API_KEY;
 
       if (!apiKey || apiKey === 'your_gemini_api_key_here') {
-        setError('Please add your Gemini API key to the .env file');
+        setError('Please add your Gemini API key by clicking the logo');
         setIsSDKReady(false);
         return;
       }
