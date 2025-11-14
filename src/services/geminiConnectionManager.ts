@@ -442,18 +442,29 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
     // Add to buffer for smooth playback
     this.audioBuffer.push(base64Audio);
 
+    // Keep buffer bounded
+    if (this.audioBuffer.length > 500) {
+      console.log('🔊 Buffer overflow protection: trimming excess chunks');
+      this.audioBuffer = this.audioBuffer.slice(-500);
+    }
+
     // Calculate total buffered duration
     const totalBufferedDuration = this.audioBuffer.reduce((total, chunk) => {
       const estimatedSamples = Math.floor((chunk.length * 3) / 4) / 2; // Rough estimate
       return total + (estimatedSamples / 24000);
     }, 0);
 
-    // Start playing sequence if this is the first chunk OR if we have enough buffer
-    if (!this.isPlayingSequence && (isFirstChunk || totalBufferedDuration >= 0.2)) {
+    const shouldStartPlayback =
+      !this.isPlayingSequence && (isFirstChunk || totalBufferedDuration >= 0.12);
+
+    if (shouldStartPlayback) {
       console.log(`▶️ Starting playback with ${totalBufferedDuration.toFixed(3)}s buffered`);
-      this.isPlayingSequence = true;
-      this.nextPlayTime = null; // Reset timing
-      this.playNextBufferedChunk(volume);
+      this.scheduleBufferedPlayback(volume);
+    } else if (this.isPlayingSequence) {
+      // Already playing, make sure new chunks are scheduled
+      this.scheduleBufferedPlayback(volume);
+    } else {
+      console.log(`⏳ Buffering audio (${totalBufferedDuration.toFixed(3)}s) before playback...`);
     }
   }
 
@@ -522,6 +533,9 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
         console.log('✅ Combined audio playback completed');
         this.isPlayingSequence = false;
         this.audioBuffer = []; // Clear buffer after playing
+        this.activeSources = this.activeSources.filter(s => s !== source);
+        this.currentAudioSource = null;
+        this.nextPlayTime = null;
       };
 
       source.start(0);
@@ -534,98 +548,83 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
   }
 
   /**
-   * Play the next chunk from the buffer with proper timing
+   * Schedule buffered chunks with continuous playback
    */
-  private playNextBufferedChunk(volume: number): void {
-    if (this.audioBuffer.length === 0) {
-      // No more chunks to play
-      this.isPlayingSequence = false;
-      this.nextPlayTime = null;
-      return;
-    }
-
+  private scheduleBufferedPlayback(volume: number): void {
     if (!this.audioContext) {
       console.error('❌ No audio context for playback');
       return;
     }
 
-    // Limit buffer size to prevent memory issues
-    if (this.audioBuffer.length > 500) {
-      console.log('🔊 Buffer overflow protection: trimming buffer from', this.audioBuffer.length, 'to 500 chunks');
-      this.audioBuffer = this.audioBuffer.slice(-500); // Keep last 500 chunks
-    }
-
-    const base64Audio = this.audioBuffer.shift()!; // Get next chunk
-
-    // Validate audio data
-    const chunkInfo = this.audioProcessor.getAudioChunkInfo(base64Audio);
-    if (!chunkInfo.isValid) {
-      console.error('❌ Invalid audio chunk data, skipping');
-      this.playNextBufferedChunk(volume);
+    if (this.isSchedulingPlayback) {
       return;
     }
 
-    try {
-      // Convert base64 to PCM using the optimized processor
-      const pcmData = this.audioProcessor.base64ToPCM(base64Audio);
-      if (pcmData.length === 0) {
-        console.error('❌ Empty PCM data, skipping chunk');
-        this.playNextBufferedChunk(volume);
-        return;
-      }
-
-      // Create audio buffer using the processor
-      const audioBuffer = this.audioProcessor.pcmToAudioBuffer(pcmData, this.audioContext);
-      if (!audioBuffer) {
-        console.error('❌ Failed to create audio buffer, skipping chunk');
-        this.playNextBufferedChunk(volume);
-        return;
-      }
-
-      // Play the audio buffer using the processor
-      const source = this.audioProcessor.playAudioBuffer(audioBuffer, this.audioContext, volume);
-      if (!source) {
-        console.error('❌ Failed to play audio buffer, skipping chunk');
-        this.playNextBufferedChunk(volume);
-        return;
-      }
-
-      // Calculate timing for next chunk
-      const chunkDuration = audioBuffer.duration;
-      const currentTime = this.audioContext.currentTime;
-
-      // Schedule this chunk to play at the correct time
-      const playTime = this.nextPlayTime !== null ? this.nextPlayTime : currentTime;
-      source.start(playTime);
-
-      // Calculate when the next chunk should play (no gap for seamless playback)
-      this.nextPlayTime = playTime + chunkDuration; // No gap between chunks
-
-      // Schedule the next chunk immediately
-      source.onended = () => {
-        if (this.audioBuffer.length > 0) {
-          this.playNextBufferedChunk(volume); // Play immediately when current chunk ends
-        } else {
-          // No more chunks
-          this.isPlayingSequence = false;
-          this.nextPlayTime = null;
-        }
-      };
-
-      // Log chunk info for debugging
-      console.log(`🔊 Playing chunk: ${pcmData.length} samples, ${chunkDuration.toFixed(3)}s duration`);
-
-    } catch (error) {
-      console.error('❌ Error playing buffered audio chunk:', error);
-      // Continue with next chunk even if this one fails
-      if (this.audioBuffer.length > 0) {
-        setTimeout(() => {
-          this.playNextBufferedChunk(volume);
-        }, 10);
-      } else {
+    if (this.audioBuffer.length === 0) {
+      if (this.activeSources.length === 0) {
         this.isPlayingSequence = false;
         this.nextPlayTime = null;
       }
+      return;
+    }
+
+    this.isSchedulingPlayback = true;
+
+    try {
+      while (this.audioBuffer.length > 0) {
+        const base64Audio = this.audioBuffer.shift()!;
+        const chunkInfo = this.audioProcessor.getAudioChunkInfo(base64Audio);
+        if (!chunkInfo.isValid) {
+          console.error('❌ Invalid audio chunk data, skipping');
+          continue;
+        }
+
+        const pcmData = this.audioProcessor.base64ToPCM(base64Audio);
+        if (pcmData.length === 0) {
+          console.error('❌ Empty PCM data, skipping chunk');
+          continue;
+        }
+
+        const audioBuffer = this.audioProcessor.pcmToAudioBuffer(pcmData, this.audioContext);
+        if (!audioBuffer) {
+          console.error('❌ Failed to create audio buffer, skipping chunk');
+          continue;
+        }
+
+        const source = this.audioProcessor.playAudioBuffer(audioBuffer, this.audioContext, volume);
+        if (!source) {
+          console.error('❌ Failed to create audio source, skipping chunk');
+          continue;
+        }
+
+        const currentTime = this.audioContext.currentTime;
+        const baseStart = this.nextPlayTime ?? (currentTime + this.playbackLookahead);
+        const safeStart = Math.max(baseStart, currentTime + this.playbackLookahead);
+
+        source.onended = () => {
+          this.activeSources = this.activeSources.filter(s => s !== source);
+          if (this.activeSources.length === 0 && this.audioBuffer.length === 0) {
+            this.isPlayingSequence = false;
+            this.nextPlayTime = null;
+          } else if (this.audioBuffer.length > 0) {
+            this.scheduleBufferedPlayback(volume);
+          }
+        };
+
+        source.start(safeStart);
+        this.activeSources.push(source);
+        this.currentAudioSource = source;
+        this.isPlayingSequence = true;
+        this.nextPlayTime = safeStart + audioBuffer.duration;
+
+        console.log(`🔊 Scheduled chunk (${pcmData.length} samples) for ${safeStart.toFixed(3)}s`);
+      }
+    } catch (error) {
+      console.error('❌ Error scheduling buffered audio chunk:', error);
+      this.isPlayingSequence = false;
+      this.nextPlayTime = null;
+    } finally {
+      this.isSchedulingPlayback = false;
     }
   }
 
@@ -637,25 +636,32 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
     this.isPlayingSequence = false;
     this.nextPlayTime = null;
 
-    // Stop any currently playing audio
-    if (this.currentAudioSource) {
-      try {
-        this.currentAudioSource.stop();
-        this.currentAudioSource.disconnect();
-      } catch (e) {
-        // Ignore errors from already stopped sources
-      }
-      this.currentAudioSource = null;
+    // Stop any currently scheduled audio
+    if (this.activeSources.length > 0) {
+      this.activeSources.forEach(source => {
+        try {
+          source.stop();
+          source.disconnect();
+        } catch (e) {
+          // Ignore errors from already stopped sources
+        }
+      });
+      this.activeSources = [];
     }
+
+    this.currentAudioSource = null;
   }
 
   // Keep track of currently playing audio to prevent overlap
   private currentAudioSource: AudioBufferSourceNode | null = null;
+  private activeSources: AudioBufferSourceNode[] = [];
 
   // Audio buffering system (like the test.ts approach)
   private audioBuffer: string[] = [];
   private isPlayingSequence: boolean = false;
   private nextPlayTime: number | null = null;
+  private isSchedulingPlayback: boolean = false;
+  private readonly playbackLookahead = 0.02;
 
   
   /**
