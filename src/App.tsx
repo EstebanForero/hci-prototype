@@ -7,6 +7,7 @@ import GeminiLive from "./components/GeminiLive";
 import SidebarLayout from "./components/SidebarLayout";
 import { QRScanner } from "./components/QRScanner";
 import { CottonDetectionModal } from "./components/CottonDetectionModal";
+import { NylonDetectionModal } from "./components/NylonDetectionModal";
 import { startWashFromQR } from "./utils/washProgramManager";
 import "./App.css";
 
@@ -160,6 +161,8 @@ function App() {
   const [showPartInfo, setShowPartInfo] = useState(false);
   const [showCottonModal, setShowCottonModal] = useState(false);
   const [cottonWashProgram, setCottonWashProgram] = useState<any>(null);
+  const [showNylonModal, setShowNylonModal] = useState(false);
+  const [nylonWashProgram, setNylonWashProgram] = useState<any>(null);
 
   // Calculate resource usage based on wash configuration
   const calculateResourceUsage = (config: WashConfiguration) => {
@@ -349,6 +352,67 @@ function App() {
     setShowCottonModal(false);
   }, []);
 
+  // Handle nylon detection modal
+  const handleNylonDetectedShow = useCallback((washProgram: any) => {
+    console.log('🧵 Showing nylon detection modal:', washProgram);
+    setNylonWashProgram(washProgram);
+    setShowNylonModal(true);
+  }, []);
+
+  const handleNylonModalConfirm = useCallback(() => {
+    if (nylonWashProgram) {
+      console.log('✅ User confirmed nylon wash program');
+
+      // Start wash using modular wash function
+      const success = startWashFromQR(nylonWashProgram.originalQRText, {
+        onStartWash: (config) => {
+          console.log('🧺 Starting nylon wash with config:', config);
+          handleConfigStart(config);
+        },
+        onError: (error) => {
+          console.error('❌ Failed to start nylon wash:', error);
+        }
+      });
+
+      if (success) {
+        console.log('✅ Nylon wash started successfully!');
+      }
+
+      setShowNylonModal(false);
+    }
+  }, [nylonWashProgram, handleConfigStart]);
+
+  const handleNylonModalCancel = useCallback(() => {
+    console.log('❌ User cancelled nylon wash program');
+    setShowNylonModal(false);
+  }, []);
+
+  // Handle time advance (10 minutes forward)
+  const handleTimeAdvance = useCallback(() => {
+    if (isActive && timeRemaining !== '0:00') {
+      const [minutes, seconds] = timeRemaining.split(':').map(Number);
+      let totalSeconds = minutes * 60 + seconds;
+
+      // Advance time by 10 minutes (600 seconds)
+      totalSeconds = Math.max(0, totalSeconds - 600);
+
+      const newMinutes = Math.floor(totalSeconds / 60);
+      const newSeconds = totalSeconds % 60;
+      const newTimeRemaining = `${newMinutes}:${newSeconds.toString().padStart(2, '0')}`;
+
+      setTimeRemaining(newTimeRemaining);
+      console.log(`⏩ Time advanced by 10 minutes. Remaining: ${newTimeRemaining}`);
+
+      // If time reaches zero, end the wash
+      if (totalSeconds === 0) {
+        setIsActive(false);
+        setCurrentCycle(prev => prev + 1);
+      }
+    } else {
+      console.log('⏩ Time advance only works during active wash cycles');
+    }
+  }, [isActive, timeRemaining]);
+
 
   return (
     <SidebarLayout
@@ -398,7 +462,46 @@ function App() {
                   console.error('❌ QR Scanner error:', error);
                 }}
                 onCottonDetectedShow={handleCottonDetectedShow}
+                onNylonDetectedShow={handleNylonDetectedShow}
               />
+
+              {/* Time Advance Button */}
+              <motion.button
+                onClick={handleTimeAdvance}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className={`p-2 rounded-xl border cursor-pointer transition-colors relative group ${
+                  isActive && timeRemaining !== '0:00'
+                    ? 'bg-blue-500/20 border-blue-500/30 hover:bg-blue-500/30'
+                    : 'bg-gray-500/20 border-gray-500/30 hover:bg-gray-500/30'
+                }`}
+                title="Advance Time: +10 minutes"
+              >
+                <svg
+                  className={`w-5 h-5 ${isActive && timeRemaining !== '0:00' ? 'text-blue-400' : 'text-gray-400'}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.933 12.8a1 1 0 000-1.6L6.6 7.2A1 1 0 005 8v8a1 1 0 001.6.8l5.333-4zM19.933 12.8a1 1 0 000-1.6l-5.333-4A1 1 0 0013 8v8a1 1 0 001.6.8l5.333-4z" />
+                </svg>
+
+                {/* Active indicator */}
+                {isActive && timeRemaining !== '0:00' && (
+                  <motion.div
+                    initial={{ scale: 0, opacity: 0 }}
+                    animate={{ scale: 1.2, opacity: 0.3 }}
+                    exit={{ scale: 0, opacity: 0 }}
+                    className="absolute inset-0 bg-blue-500 rounded-xl"
+                    transition={{ duration: 0.3 }}
+                  />
+                )}
+
+                {/* Tooltip */}
+                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-xs text-white rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                  Advance +10min {isActive && timeRemaining !== '0:00' ? '⏩' : '(inactive)'}
+                </div>
+              </motion.button>
             </div>
 
             <div className="flex items-center space-x-6">
@@ -704,6 +807,14 @@ function App() {
         washProgram={cottonWashProgram}
         onConfirm={handleCottonModalConfirm}
         onCancel={handleCottonModalCancel}
+      />
+
+      {/* Nylon Detection Modal - Portal to body */}
+      <NylonDetectionModal
+        isOpen={showNylonModal}
+        washProgram={nylonWashProgram}
+        onConfirm={handleNylonModalConfirm}
+        onCancel={handleNylonModalCancel}
       />
       </div>
     </SidebarLayout>

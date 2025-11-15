@@ -13,9 +13,10 @@ interface QRScannerProps {
   onError?: (error: string) => void;
   onCottonDetected?: (recommendation: string, qrText: string) => void;
   onCottonDetectedShow?: (washProgram: any) => void;
+  onNylonDetectedShow?: (washProgram: any) => void;
 }
 
-export function QRScanner({ onScan, onError, onCottonDetected, onCottonDetectedShow }: QRScannerProps) {
+export function QRScanner({ onScan, onError, onCottonDetected, onCottonDetectedShow, onNylonDetectedShow }: QRScannerProps) {
   const [isScanning, setIsScanning] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [lastScanResult, setLastScanResult] = useState<string | null>(null);
@@ -112,7 +113,7 @@ export function QRScanner({ onScan, onError, onCottonDetected, onCottonDetectedS
         onScan?.(code.data);
         console.log('📱 QR Code scanned:', code.data);
 
-        // Check if QR contains "cotton" and provide wash recommendation
+        // Check if QR contains fabric types and provide wash recommendation
         if (qrText.includes('cotton')) {
           const recommendation = createWashRecommendation(code.data);
           const washProgram = analyzeQRTextForWashing(code.data);
@@ -128,6 +129,19 @@ export function QRScanner({ onScan, onError, onCottonDetected, onCottonDetectedS
           });
 
           // Don't call onCottonDetected yet - wait for user confirmation
+        } else if (qrText.includes('nylon')) {
+          const recommendation = createWashRecommendation(code.data);
+          const washProgram = analyzeQRTextForWashing(code.data);
+
+          console.log('🧵 Nylon detected! Wash recommendation:', recommendation);
+          console.log('🧺 Wash program:', washProgram);
+
+          // Show modal via parent component
+          onNylonDetectedShow?.({
+            ...washProgram,
+            originalQRText: code.data,
+            recommendation: recommendation
+          });
         }
 
         // Stop scanning after successful scan
