@@ -1,10 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
 import WashingMachine3D from "./components/WashingMachine3D";
 import StatsDisplay from "./components/StatsDisplay";
 import WashConfig from "./components/WashConfig";
 import GeminiLive from "./components/GeminiLive";
 import SidebarLayout from "./components/SidebarLayout";
+import { QRScanner } from "./components/QRScanner";
+import { CottonDetectionModal } from "./components/CottonDetectionModal";
+import { startWashFromQR } from "./utils/washProgramManager";
 import "./App.css";
 
 interface WashConfiguration {
@@ -155,6 +158,8 @@ function App() {
 
   const [selectedPart, setSelectedPart] = useState<PartStats | null>(null);
   const [showPartInfo, setShowPartInfo] = useState(false);
+  const [showCottonModal, setShowCottonModal] = useState(false);
+  const [cottonWashProgram, setCottonWashProgram] = useState<any>(null);
 
   // Calculate resource usage based on wash configuration
   const calculateResourceUsage = (config: WashConfiguration) => {
@@ -309,7 +314,42 @@ function App() {
     setTimeRemaining(`${config.duration}:00`);
   };
 
-  
+  // Handle cotton detection modal
+  const handleCottonDetectedShow = useCallback((washProgram: any) => {
+    console.log('👕 Showing cotton detection modal:', washProgram);
+    setCottonWashProgram(washProgram);
+    setShowCottonModal(true);
+  }, []);
+
+  const handleCottonModalConfirm = useCallback(() => {
+    if (cottonWashProgram) {
+      console.log('✅ User confirmed cotton wash program');
+
+      // Start wash using modular wash function
+      const success = startWashFromQR(cottonWashProgram.originalQRText, {
+        onStartWash: (config) => {
+          console.log('🧺 Starting cotton wash with config:', config);
+          handleConfigStart(config);
+        },
+        onError: (error) => {
+          console.error('❌ Failed to start cotton wash:', error);
+        }
+      });
+
+      if (success) {
+        console.log('✅ Cotton wash started successfully!');
+      }
+
+      setShowCottonModal(false);
+    }
+  }, [cottonWashProgram, handleConfigStart]);
+
+  const handleCottonModalCancel = useCallback(() => {
+    console.log('❌ User cancelled cotton wash program');
+    setShowCottonModal(false);
+  }, []);
+
+
   return (
     <SidebarLayout
       isActive={isActive}
@@ -349,6 +389,16 @@ function App() {
                 <h1 className="text-2xl font-bold text-white">SmartWash Pro</h1>
                 <p className="text-gray-400 text-sm">AI-Powered Washing Machine Control</p>
               </div>
+              {/* QR Scanner */}
+              <QRScanner
+                onScan={(result) => {
+                  console.log('📱 QR Code scanned:', result);
+                }}
+                onError={(error) => {
+                  console.error('❌ QR Scanner error:', error);
+                }}
+                onCottonDetectedShow={handleCottonDetectedShow}
+              />
             </div>
 
             <div className="flex items-center space-x-6">
@@ -647,6 +697,14 @@ function App() {
           </motion.div>
         </motion.div>
       )}
+
+      {/* Cotton Detection Modal - Portal to body */}
+      <CottonDetectionModal
+        isOpen={showCottonModal}
+        washProgram={cottonWashProgram}
+        onConfirm={handleCottonModalConfirm}
+        onCancel={handleCottonModalCancel}
+      />
       </div>
     </SidebarLayout>
   );
