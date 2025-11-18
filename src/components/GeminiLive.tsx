@@ -298,6 +298,23 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
     }
   }, [connectToProvider, isSDKReady]);
 
+  // Keep tool context in sync with latest machine state
+  useEffect(() => {
+    const manager = connectionManagerRef.current;
+    if (!manager?.getToolManager) return;
+    const toolManager = manager.getToolManager();
+    if (toolManager?.updateContext) {
+      toolManager.updateContext({
+        overallHealth,
+        isActive,
+        currentCycle: currentCycle || 0,
+        totalCyclesScheduled,
+        timeRemaining,
+        parts
+      });
+    }
+  }, [overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts]);
+
   // Handle voice input toggle
   const handleVoiceInput = useCallback(async () => {
     if (voiceProvider === 'openai-webrtc') {
