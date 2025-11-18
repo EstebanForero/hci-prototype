@@ -4,20 +4,25 @@
  */
 
 import { motion } from 'framer-motion';
+import { VoiceProvider } from '../../types/voice';
 
 interface SettingsPanelProps {
   wakeWordEnabled: boolean;
   autoStartEnabled: boolean;
+  provider: VoiceProvider;
   onWakeWordToggle: () => void;
   onAutoStartToggle: () => void;
+  onProviderChange: (provider: VoiceProvider) => void;
   className?: string;
 }
 
 export default function SettingsPanel({
   wakeWordEnabled,
   autoStartEnabled,
+  provider,
   onWakeWordToggle,
   onAutoStartToggle,
+  onProviderChange,
   className = ''
 }: SettingsPanelProps) {
   return (
@@ -39,6 +44,27 @@ export default function SettingsPanel({
             wakeWordEnabled ? 'translate-x-6' : 'translate-x-0.5'
           }`} />
         </button>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-gray-400">Voice Provider</span>
+        <div className="flex space-x-2">
+          {(['gemini', 'openai', 'openai-webrtc'] as VoiceProvider[]).map((option) => (
+            <button
+              key={option}
+              onClick={() => onProviderChange(option)}
+              className={`px-2 py-1 rounded-md text-xs ${
+                provider === option ? 'bg-blue-500 text-white' : 'bg-gray-700 text-gray-300'
+              }`}
+            >
+              {option === 'gemini'
+                ? 'Gemini'
+                : option === 'openai'
+                ? 'OpenAI (WS)'
+                : 'OpenAI (WebRTC)'}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="flex items-center justify-between">

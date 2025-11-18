@@ -15,8 +15,11 @@ import {
 } from "../types/gemini";
 
 // Import modular services
-import { GeminiConnectionManager, ConnectionCallbacks } from "../services/geminiConnectionManager";
+import { GeminiConnectionManager } from "../services/geminiConnectionManager";
 import { GeminiAudioService, AudioCallbacks } from "../services/geminiAudioService";
+import { OpenAIConnectionManager } from "../services/openAIConnectionManager";
+import { OpenAIWebRTCConnectionManager } from "../services/openAIWebRTCConnectionManager";
+import { ConnectionCallbacks, VoiceProvider } from "../types/voice";
 
 // Import modular UI components
 import ChatMessages from "./gemini/ChatMessages";
@@ -98,9 +101,10 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
   const [textInput, setTextInput] = useState('');
   const [useTextInput, setUseTextInput] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>('gemini');
 
   // Services
-  const connectionManagerRef = useRef<GeminiConnectionManager | null>(null);
+  const connectionManagerRef = useRef<GeminiConnectionManager | OpenAIConnectionManager | OpenAIWebRTCConnectionManager | null>(null);
   const audioServiceRef = useRef<GeminiAudioService | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -130,15 +134,9 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
 
   // Initialize services (only once)
   const initializeServices = useCallback(() => {
-    // Prevent multiple initializations
-    if (connectionManagerRef.current && audioServiceRef.current) {
-      console.log('🔧 Services already initialized');
-      return;
-    }
+    console.log(`🔧 Initializing ${voiceProvider} services...`);
+    setIsSDKReady(false);
 
-    console.log('🔧 Initializing Gemini services...');
-
-    // Clean up any existing services first
     if (connectionManagerRef.current) {
       connectionManagerRef.current.disconnect();
       connectionManagerRef.current = null;
@@ -148,15 +146,16 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       audioServiceRef.current = null;
     }
 
-    // Initialize audio service
-    audioServiceRef.current = new GeminiAudioService(false); // Disable debug logs for now
+    if (voiceProvider !== 'openai-webrtc') {
+      audioServiceRef.current = new GeminiAudioService(false);
+    }
 
-    // Initialize connection manager with callbacks
     const connectionCallbacks: ConnectionCallbacks = {
       onReady: () => {
-        console.log('✅ Gemini connection ready');
+        console.log(`✅ ${voiceProvider === 'gemini' ? 'Gemini' : voiceProvider === 'openai' ? 'OpenAI' : 'OpenAI WebRTC'} connection ready`);
         setIsSDKReady(true);
         setError(null);
+        setIsListening(voiceProvider === 'openai-webrtc');
       },
       onError: (errorMessage: string) => {
         console.error('❌ Connection error:', errorMessage);
@@ -189,36 +188,53 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
         }
       },
       onAudioChunk: (audioData: string, isFirstChunk: boolean) => {
-        // Play audio chunk immediately with current volume
-        connectionManagerRef.current?.playAudioChunk(audioData, isFirstChunk, volume);
+        if (voiceProvider === 'openai-webrtc') {
+          if (isFirstChunk) setIsSpeaking(true);
+          return;
+        }
 
-        // Set speaking state for first chunk
+        connectionManagerRef.current?.playAudioChunk(audioData, isFirstChunk, volume);
         if (isFirstChunk) {
           setIsSpeaking(true);
         }
       },
       onTurnComplete: () => {
         console.log('🔄 Turn complete - stopping speech and clearing audio buffer');
-        connectionManagerRef.current?.clearAudioBuffer(); // Clear any remaining audio chunks
+        if (voiceProvider !== 'openai-webrtc') {
+          connectionManagerRef.current?.clearAudioBuffer();
+        }
         setTimeout(() => {
           setIsSpeaking(false);
         }, 500);
       }
     };
-
-    connectionManagerRef.current = new GeminiConnectionManager(connectionCallbacks);
-  }, [addResponse, volume]);
+    connectionManagerRef.current =
+      voiceProvider === 'gemini'
+        ? new GeminiConnectionManager(connectionCallbacks)
+        : voiceProvider === 'openai'
+          ? new OpenAIConnectionManager(connectionCallbacks)
+          : new OpenAIWebRTCConnectionManager(connectionCallbacks);
+  }, [addResponse, volume, voiceProvider]);
 
   // Connect to Gemini Live
-  const connectToGemini = useCallback(async () => {
+  const connectToProvider = useCallback(async () => {
     if (!connectionManagerRef.current) {
       return;
     }
 
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    if (!apiKey || apiKey === 'your_gemini_api_key_here') {
-      setError('Please add your Gemini API key to .env file');
-      return;
+    let apiKey: string | undefined;
+    if (voiceProvider === 'gemini') {
+      apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      if (!apiKey || apiKey === 'your_gemini_api_key_here') {
+        setError('Please add your Gemini API key to .env file');
+        return;
+      }
+    } else {
+      apiKey = import.meta.env.VITE_OPENAI_REALTIME_KEY || import.meta.env.VITE_OPENAI_API_KEY;
+      if (!apiKey) {
+        setError('Please add your OpenAI realtime API key to .env file');
+        return;
+      }
     }
 
     const systemStatus = {
@@ -230,23 +246,38 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       parts
     };
 
-    const success = await connectionManagerRef.current.connect(apiKey, systemStatus, onStartWash, onStopWash, onGetConsumption);
-  }, [overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts, onStartWash, onStopWash, onGetConsumption]);
+    const success = await connectionManagerRef.current.connect(
+      apiKey,
+      systemStatus,
+      onStartWash,
+      onStopWash,
+      onGetConsumption
+    );
+
+    if (!success) {
+      setError(`Failed to connect to ${voiceProvider === 'gemini' ? 'Gemini' : 'OpenAI'} Live API`);
+    }
+  }, [voiceProvider, overallHealth, isActive, currentCycle, totalCyclesScheduled, timeRemaining, parts, onStartWash, onStopWash, onGetConsumption]);
 
   // Initialize services on mount (only once)
   useEffect(() => {
     initializeServices();
-  }, []); // Remove dependencies to prevent re-initialization
+  }, [initializeServices]);
 
   // Connect to Gemini once services are ready
   useEffect(() => {
     if (connectionManagerRef.current && !isSDKReady) {
-      connectToGemini();
+      connectToProvider();
     }
-  }, [connectionManagerRef.current, isSDKReady, connectToGemini]);
+  }, [connectToProvider, isSDKReady]);
 
   // Handle voice input toggle
   const handleVoiceInput = useCallback(async () => {
+    if (voiceProvider === 'openai-webrtc') {
+      setError('OpenAI WebRTC mode streams audio automatically.');
+      return;
+    }
+
     if (!connectionManagerRef.current || !isSDKReady) {
       setError('Please connect to Gemini Live first');
       return;
@@ -301,7 +332,7 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       console.error('Voice input error:', error);
       setError('Voice input error: ' + (error as Error).message);
     }
-  }, [isListening, isSDKReady, clearTranscript]);
+  }, [isListening, isSDKReady, clearTranscript, voiceProvider]);
 
   // Handle text input
   const handleTextInput = useCallback(async (e: React.FormEvent) => {
@@ -320,6 +351,17 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
   }, [textInput, addResponse]);
 
   // Handle text input from TextInput component
+  const handleProviderChange = useCallback((provider: VoiceProvider) => {
+    if (provider === voiceProvider) return;
+    if (isListening && voiceProvider !== 'openai-webrtc') {
+      handleVoiceInput();
+    }
+    setIsSDKReady(false);
+    setIsListening(provider === 'openai-webrtc');
+    setVoiceProvider(provider);
+    setError(null);
+  }, [voiceProvider, isListening, handleVoiceInput]);
+
   const handleTextInputSubmit = useCallback((text: string) => {
     if (!connectionManagerRef.current) return;
 
@@ -448,9 +490,11 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       {isSettingsOpen && (
         <SettingsPanel
           wakeWordEnabled={wakeWordEnabled}
-          setWakeWordEnabled={setWakeWordEnabled}
           autoStartEnabled={autoStartEnabled}
-          setAutoStartEnabled={setAutoStartEnabled}
+          provider={voiceProvider}
+          onWakeWordToggle={() => setWakeWordEnabled(!wakeWordEnabled)}
+          onAutoStartToggle={() => setAutoStartEnabled(!autoStartEnabled)}
+          onProviderChange={handleProviderChange}
         />
       )}
     </motion.div>

@@ -1,306 +1,233 @@
 #!/usr/bin/env bun
 
-import WebSocket from 'ws';
-import { writeFileSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, unlinkSync } from 'fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { GeminiConnectionManager } from './src/services/geminiConnectionManager';
+import { ConnectionCallbacks } from './src/types/voice';
 
-// Configuration
-const API_KEY = process.env.VITE_GEMINI_API_KEY || 'AIzaSyCT2H5X4m0za4vRWW2PnVUyrXVzJP_RN-0';
-const WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
+const MP3_PATH = './test-record.mp3';
+const OUTPUT_WAV = 'test_live_response.wav';
 
-// Convert base64 string to Uint8Array
-function base64ToUint8Array(base64: string): Uint8Array {
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+function loadApiKey(): string {
+  if (process.env.VITE_GEMINI_API_KEY) {
+    return process.env.VITE_GEMINI_API_KEY;
+  }
+
+  if (existsSync('.env')) {
+    const lines = readFileSync('.env', 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const [key, ...rest] = trimmed.split('=');
+      if (key === 'VITE_GEMINI_API_KEY') {
+        const value = rest.join('=').trim();
+        process.env.VITE_GEMINI_API_KEY = value;
+        return value;
+      }
     }
-    return bytes;
+  }
+
+  throw new Error('VITE_GEMINI_API_KEY not found in environment or .env file.');
 }
 
-// Create WAV file from PCM data
+function base64ToPCM(base64Audio: string): Int16Array {
+  const buffer = Buffer.from(base64Audio, 'base64');
+  return new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / Int16Array.BYTES_PER_ELEMENT);
+}
+
 function createWavFile(pcmData: Int16Array, sampleRate: number = 24000): Buffer {
-    const numberOfChannels = 1;
-    const bitsPerSample = 16;
-    const blockAlign = numberOfChannels * (bitsPerSample / 8);
-    const byteRate = sampleRate * blockAlign;
-    const dataSize = pcmData.length * 2;
-    const fileSize = 36 + dataSize;
+  const numberOfChannels = 1;
+  const bitsPerSample = 16;
+  const blockAlign = numberOfChannels * (bitsPerSample / 8);
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = pcmData.length * 2;
+  const fileSize = 36 + dataSize;
 
-    const buffer = Buffer.alloc(44 + dataSize);
+  const buffer = Buffer.alloc(44 + dataSize);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(fileSize, 4);
+  buffer.write('WAVE', 8);
+  buffer.write('fmt ', 12);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(numberOfChannels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(byteRate, 28);
+  buffer.writeUInt16LE(blockAlign, 32);
+  buffer.writeUInt16LE(bitsPerSample, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(dataSize, 40);
 
-    // RIFF header
-    buffer.write('RIFF', 0);
-    buffer.writeUInt32LE(fileSize, 4);
-    buffer.write('WAVE', 8);
+  let offset = 44;
+  for (let i = 0; i < pcmData.length; i++) {
+    buffer.writeInt16LE(pcmData[i], offset);
+    offset += 2;
+  }
+  return buffer;
+}
 
-    // fmt chunk
-    buffer.write('fmt ', 12);
-    buffer.writeUInt32LE(16, 16); // chunk size
-    buffer.writeUInt16LE(1, 20); // audio format (PCM)
-    buffer.writeUInt16LE(numberOfChannels, 22);
-    buffer.writeUInt32LE(sampleRate, 24);
-    buffer.writeUInt32LE(byteRate, 28);
-    buffer.writeUInt16LE(blockAlign, 32);
-    buffer.writeUInt16LE(bitsPerSample, 34);
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-    // data chunk
-    buffer.write('data', 36);
-    buffer.writeUInt32LE(dataSize, 40);
+function convertMp3ToPCM(): Buffer {
+  if (!existsSync(MP3_PATH)) {
+    throw new Error(`Missing ${MP3_PATH}. Please add your voice sample first.`);
+  }
 
-    // Write PCM data
-    let offset = 44;
-    for (let i = 0; i < pcmData.length; i++) {
-        buffer.writeInt16LE(pcmData[i], offset);
-        offset += 2;
+  const tempRaw = join(tmpdir(), `gemini-audio-${Date.now()}.raw`);
+  const ffmpegResult = spawnSync('ffmpeg', [
+    '-y',
+    '-i',
+    MP3_PATH,
+    '-ac',
+    '1',
+    '-ar',
+    '16000',
+    '-f',
+    's16le',
+    tempRaw
+  ], { stdio: 'inherit' });
+
+  if (ffmpegResult.status !== 0) {
+    throw new Error('Failed to convert MP3 to PCM. Ensure ffmpeg is installed and accessible.');
+  }
+
+  const pcmBuffer = readFileSync(tempRaw);
+  unlinkSync(tempRaw);
+  return pcmBuffer;
+}
+
+async function streamPCMThroughManager(manager: GeminiConnectionManager, pcmBuffer: Buffer) {
+  const chunkSize = 4096;
+  for (let offset = 0; offset < pcmBuffer.length; offset += chunkSize) {
+    const chunk = pcmBuffer.slice(offset, offset + chunkSize);
+    manager.sendAudio(Buffer.from(chunk).toString('base64'));
+    await sleep(10);
+  }
+  manager.sendAudioStreamEnd();
+}
+
+async function runIntegrationTest() {
+  const apiKey = loadApiKey();
+  const pcmBuffer = convertMp3ToPCM();
+
+  const audioChunks: string[] = [];
+  let turnCompleteResolver: (() => void) | null = null;
+  let turnCompleteTimeout: NodeJS.Timeout | null = null;
+  const turnCompletePromise = new Promise<void>((resolve) => {
+    turnCompleteResolver = () => {
+      if (turnCompleteTimeout) {
+        clearTimeout(turnCompleteTimeout);
+        turnCompleteTimeout = null;
+      }
+      resolve();
+    };
+
+    turnCompleteTimeout = setTimeout(() => {
+      console.log('⏱️ Timeout waiting for turn completion, finalizing with collected audio.');
+      resolve();
+    }, 15000);
+  });
+
+  let manager: GeminiConnectionManager;
+
+  const connectionCallbacks: ConnectionCallbacks = {
+    onReady: () => {},
+    onError: (error) => {
+      console.error('❌ Connection error:', error);
+      process.exit(1);
+    },
+    onMessage: (message) => {
+      if (message.text) {
+        console.log(`🤖 ${message.text}`);
+      }
+    },
+    onTranscription: (text) => {
+      console.log(`🗣️ Transcript: ${text}`);
+    },
+    onToolCall: async (toolCalls: any[]) => {
+      console.log('🛠️ Tool calls received:', toolCalls);
+      const toolManager = manager.getToolManager();
+      if (toolManager) {
+        const responses = await toolManager.executeToolCalls(toolCalls);
+        manager.sendToolResponse(responses);
+      }
+    },
+    onAudioChunk: (audioData, _isFirst) => {
+      audioChunks.push(audioData);
+    },
+    onTurnComplete: () => {
+      console.log('🔄 Turn complete detected');
+      turnCompleteResolver?.();
     }
+  };
 
-    return buffer;
+  const readyPromise = new Promise<void>((resolve) => {
+    connectionCallbacks.onReady = () => {
+      console.log('✅ Gemini connection ready');
+      resolve();
+    };
+  });
+
+  const dummyStatus = {
+    overallHealth: 98,
+    isActive: false,
+    currentCycle: 0,
+    totalCyclesScheduled: 0,
+    timeRemaining: '0m',
+    parts: []
+  };
+
+  manager = new GeminiConnectionManager(connectionCallbacks);
+
+  const connected = await manager.connect(
+    apiKey,
+    dummyStatus,
+    () => console.log('🧺 start_wash invoked'),
+    reason => console.log('🧺 stop_wash invoked', reason),
+    () => {}
+  );
+
+  if (!connected) {
+    throw new Error('Failed to connect to Gemini Live API.');
+  }
+
+  await readyPromise;
+
+  await streamPCMThroughManager(manager, pcmBuffer);
+  await turnCompletePromise;
+  manager.disconnect();
+
+  if (audioChunks.length === 0) {
+    console.log('⚠️ No audio response received.');
+    return;
+  }
+
+  let totalSamples = 0;
+  const segments: Int16Array[] = [];
+
+  for (const chunk of audioChunks) {
+    const pcm = base64ToPCM(chunk);
+    segments.push(pcm);
+    totalSamples += pcm.length;
+  }
+
+  const combined = new Int16Array(totalSamples);
+  let offset = 0;
+  for (const segment of segments) {
+    combined.set(segment, offset);
+    offset += segment.length;
+  }
+
+  const wavBuffer = createWavFile(combined, 24000);
+  writeFileSync(OUTPUT_WAV, wavBuffer);
+  console.log(`✅ Saved AI response to ${OUTPUT_WAV} (${(totalSamples / 24000).toFixed(2)}s)`);
 }
 
-// Main test function
-async function testGeminiLiveAudio() {
-    console.log('🚀 Starting Gemini Live Audio Test - Memory Buffer Version');
-
-    return new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(WS_URL);
-        let audioDataReceived = false;
-        let testComplete = false;
-        let audioChunkCount = 0;
-        let allAudioChunks: string[] = []; // Store all chunks in memory
-
-        // Timeout after 60 seconds
-        const timeout = setTimeout(() => {
-            if (!testComplete && audioDataReceived) {
-                console.log('⏰ Test timeout - processing all collected chunks');
-                processAllChunks();
-            } else {
-                console.log('⏰ Test timeout - no audio received');
-                ws.close();
-                resolve();
-            }
-        }, 60000);
-
-        // Function to process all collected chunks at once
-        const processAllChunks = () => {
-            console.log(`🎵 Processing all ${allAudioChunks.length} collected audio chunks...`);
-
-            if (allAudioChunks.length === 0) {
-                console.log('❌ No audio chunks to process');
-                ws.close();
-                resolve();
-                return;
-            }
-
-            // Combine all chunks into one complete audio buffer
-            let totalSamples = 0;
-            const allPcmData: Int16Array[] = [];
-
-            // Convert each chunk to PCM and store
-            for (let i = 0; i < allAudioChunks.length; i++) {
-                const chunk = allAudioChunks[i];
-                const binaryString = atob(chunk);
-                const bytes = new Uint8Array(binaryString.length);
-
-                for (let j = 0; j < binaryString.length; j++) {
-                    bytes[j] = binaryString.charCodeAt(j);
-                }
-
-                const pcmData = new Int16Array(bytes.buffer.slice(0, bytes.length));
-                allPcmData.push(pcmData);
-                totalSamples += pcmData.length;
-
-                console.log(`🎵 Chunk ${i + 1}: ${pcmData.length} samples, total so far: ${totalSamples}`);
-            }
-
-            // Combine all PCM data into one buffer
-            const combinedPcmData = new Int16Array(totalSamples);
-            let offset = 0;
-            for (const pcmData of allPcmData) {
-                combinedPcmData.set(pcmData, offset);
-                offset += pcmData.length;
-            }
-
-            // Create one complete WAV file
-            const wavBuffer = createWavFile(combinedPcmData, 24000);
-            writeFileSync('test_complete_response.wav', wavBuffer);
-
-            console.log(`✅ Complete! Saved ${totalSamples} samples as test_complete_response.wav`);
-            console.log(`🎵 Duration: ${(totalSamples / 24000).toFixed(2)} seconds`);
-            console.log(`🎵 Total chunks: ${allAudioChunks.length}`);
-
-            testComplete = true;
-            clearTimeout(timeout);
-            ws.close();
-            resolve();
-        };
-
-        ws.on('open', () => {
-            console.log('✅ WebSocket connected');
-
-            // Send setup message
-            const setupMessage = {
-                setup: {
-                    model: "models/gemini-2.5-flash-native-audio-preview-09-2025",
-                    generation_config: {
-                        response_modalities: ["AUDIO"],
-                        speech_config: {
-                            voice_config: {
-                                prebuilt_voice_config: {
-                                    voice_name: "Kore"
-                                }
-                            }
-                        }
-                    },
-                    system_instruction: {
-                        parts: [{
-                            text: "Please respond with clear, articulate speech. When I ask you to recite something, speak at a moderate pace with good pronunciation and proper pauses. Focus on voice clarity and audio quality."
-                        }]
-                    }
-                }
-            };
-
-            console.log('📤 Sending setup message...');
-            ws.send(JSON.stringify(setupMessage));
-
-            // Send a text message to trigger longer audio response
-            setTimeout(() => {
-                const textMessage = {
-                    realtime_input: {
-                        text: "Please recite the poem 'The Road Not Taken' by Robert Frost. I want to test audio quality over a longer duration. Please speak clearly at a moderate pace with proper pauses between stanzas. This will help me detect any audio degradation over time."
-                    }
-                };
-                console.log('📤 Sending text message requesting poem...');
-                ws.send(JSON.stringify(textMessage));
-            }, 2000);
-        });
-
-        ws.on('message', async (data) => {
-            try {
-                const message = JSON.parse(data.toString());
-                console.log('📨 Received message type:', Object.keys(message));
-
-                // Handle setup complete
-                if (message.setup_complete) {
-                    console.log('✅ Setup complete');
-                    return;
-                }
-
-                // Handle errors
-                if (message.error) {
-                    console.error('❌ Error:', message.error);
-                    return;
-                }
-
-                // Handle turn complete - process all collected chunks
-                if (message.server_content?.turn_complete) {
-                    console.log('🔄 Turn complete detected - processing all collected chunks');
-                    testComplete = true;
-                    clearTimeout(timeout);
-                    processAllChunks();
-                    return;
-                }
-
-                // Look for audio content more comprehensively
-                const extractAudioFromMessage = (msg: any): string[] => {
-                    const foundAudio: string[] = [];
-
-                    // Helper function to search recursively for audio data
-                    const searchRecursively = (obj: any, path: string = '') => {
-                        if (obj === null || obj === undefined) return;
-
-                        // Check for common audio data fields
-                        const audioFields = ['data', 'audio_data', 'audio', 'inline_data', 'inlineData'];
-                        for (const field of audioFields) {
-                            if (obj[field] && typeof obj[field] === 'string' && obj[field].length > 100) {
-                                foundAudio.push(obj[field]);
-                                console.log(`🎵 Found audio at ${path}.${field}: ${obj[field].length} chars`);
-                            }
-                        }
-
-                        // Recursively search objects and arrays
-                        if (typeof obj === 'object' && !Array.isArray(obj)) {
-                            for (const key in obj) {
-                                if (obj.hasOwnProperty(key)) {
-                                    searchRecursively(obj[key], path ? `${path}.${key}` : key);
-                                }
-                            }
-                        } else if (Array.isArray(obj)) {
-                            for (let i = 0; i < obj.length; i++) {
-                                searchRecursively(obj[i], `${path}[${i}]`);
-                            }
-                        }
-                    };
-
-                    searchRecursively(msg);
-                    return foundAudio;
-                };
-
-                // Extract all audio chunks from this message
-                const audioChunksInMessage = extractAudioFromMessage(message);
-
-                // Store all found chunks
-                for (const audioData of audioChunksInMessage) {
-                    audioChunkCount++;
-                    allAudioChunks.push(audioData);
-                    audioDataReceived = true;
-                    console.log(`🎵 Stored chunk #${audioChunkCount} (total: ${allAudioChunks.length} chunks)`);
-                }
-
-                // Also check the base64 pattern matching as fallback
-                if (audioChunksInMessage.length === 0) {
-                    const messageStr = JSON.stringify(message);
-                    const base64Matches = messageStr.match(/[A-Za-z0-9+/]{40,}={0,2}/g);
-                    if (base64Matches) {
-                        console.log('🔍 Found potential base64 strings:', base64Matches.length);
-
-                        // Store all base64 matches as audio chunks
-                        for (let i = 0; i < base64Matches.length; i++) {
-                            const match = base64Matches[i];
-                            if (match.length > 100) { // Only store substantial chunks
-                                audioChunkCount++;
-                                allAudioChunks.push(match);
-                                audioDataReceived = true;
-                                console.log(`🎵 Stored base64 chunk #${audioChunkCount}: ${match.length} chars`);
-                            }
-                        }
-                    }
-                }
-
-                // If no audio found, log message structure for debugging
-                if (!audioDataReceived) {
-                    console.log('🔍 No audio found in this message');
-                    console.log('🔍 Message keys:', Object.keys(message));
-                }
-            } catch (error) {
-                console.error('❌ Error processing message:', error);
-            }
-        });
-
-        ws.on('error', (error) => {
-            console.error('❌ WebSocket error:', error);
-            clearTimeout(timeout);
-            reject(error);
-        });
-
-        ws.on('close', (code, reason) => {
-            console.log('🔌 WebSocket closed:', code, reason.toString());
-            clearTimeout(timeout);
-
-            if (!testComplete) {
-                console.log('⚠️ Test completed without finding audio');
-                resolve();
-            }
-        });
-    });
-}
-
-// Run the test
-testGeminiLiveAudio()
-    .then(() => {
-        console.log('🏁 Test finished');
-        process.exit(0);
-    })
-    .catch((error) => {
-        console.error('💥 Test failed:', error);
-        process.exit(1);
-    });
+runIntegrationTest().catch(error => {
+  console.error('❌ Test run failed:', error);
+  process.exit(1);
+});

@@ -9,27 +9,7 @@ import { createFunctionDeclarations } from '../utils/toolExecution';
 import { AudioStreamManager } from '../utils/audioStreamManager';
 import { AudioProcessor } from '../utils/audioProcessor';
 import { GeminiValidator } from '../utils/validation';
-
-export interface ConnectionCallbacks {
-  onReady: () => void;
-  onError: (error: string) => void;
-  onMessage: (message: any) => void;
-  onTranscription: (text: string) => void;
-  onToolCall: (toolCalls: any[]) => void;
-  onAudioChunk: (audioData: string, isFirstChunk: boolean) => void;
-  onTurnComplete: () => void;
-  onStopWash?: (reason?: string) => void;
-  onGetConsumption?: (config: any) => void;
-}
-
-export interface SystemStatus {
-  overallHealth: number;
-  isActive: boolean;
-  currentCycle: number;
-  totalCyclesScheduled: number;
-  timeRemaining: string;
-  parts: any[];
-}
+import { ConnectionCallbacks, SystemStatus } from '../types/voice';
 
 export class GeminiConnectionManager {
   private wsManager: any = null;
@@ -158,7 +138,17 @@ export class GeminiConnectionManager {
         voiceName: 'Kore',
         debugLogsEnabled: false,
         systemInstruction: this.buildSystemInstruction(systemStatus),
-        functionDeclarations: createFunctionDeclarations()
+        functionDeclarations: createFunctionDeclarations(),
+        realtimeInputConfig: {
+          automatic_activity_detection: {
+            disabled: false,
+            start_of_speech_sensitivity: 'START_SENSITIVITY_LOW',
+            end_of_speech_sensitivity: 'END_SENSITIVITY_LOW',
+            prefix_padding_ms: 20,
+            silence_duration_ms: 150
+          }
+        },
+        outputAudioTranscription: true
       });
 
       // Connect to Gemini Live
@@ -316,123 +306,61 @@ IMPORTANT: Respond directly and concisely. Do not speak your thoughts or plannin
    * Send audio data to Gemini
    */
   sendAudio(base64Audio: string): boolean {
-    if (!this.isConnected || !this.wsManager?.websocket || this.wsManager.websocket.readyState !== WebSocket.OPEN) {
-      console.log('❌ Cannot send audio - not connected or WebSocket not ready');
+    if (!this.wsManager) {
+      console.log('❌ Cannot send audio - connection manager not ready');
       return false;
     }
 
-    // Validate audio data before sending
     if (!this.audioProcessor.validateBase64Audio(base64Audio)) {
       console.error('❌ Invalid audio data, not sending');
       return false;
     }
 
-    const audioMessage = {
-      realtime_input: {
-        audio: {
-          data: base64Audio,
-          mimeType: "audio/pcm;rate=16000"  // Use 16kHz for input
-        }
-      }
-    };
-
-    try {
-      this.wsManager.websocket.send(JSON.stringify(audioMessage));
-      return true;
-    } catch (error) {
-      console.error('Error sending audio:', error);
-      // Mark as disconnected if there's an error
-      if (error instanceof Error && error.message.includes('WebSocket')) {
-        this.isConnected = false;
-      }
-      return false;
-    }
+    return this.wsManager.sendAudio(base64Audio);
   }
 
   /**
    * Send text message to Gemini
    */
   sendText(text: string): boolean {
-    if (!this.isConnected || !this.wsManager?.websocket || this.wsManager.websocket.readyState !== WebSocket.OPEN) {
+    if (!this.wsManager) {
       return false;
     }
 
-    const textMessage = {
-      realtime_input: {
-        text: text
-      }
-    };
-
-    try {
-      this.wsManager.websocket.send(JSON.stringify(textMessage));
-      return true;
-    } catch (error) {
-      console.error('Error sending text:', error);
-      // Mark as disconnected if there's an error
-      if (error instanceof Error && error.message.includes('WebSocket')) {
-        this.isConnected = false;
-      }
-      return false;
-    }
+    return this.wsManager.sendText(text);
   }
 
   /**
    * Send audio stream end signal
    */
   sendAudioStreamEnd(): boolean {
-    if (!this.isConnected || !this.wsManager?.websocket || this.wsManager.websocket.readyState !== WebSocket.OPEN) {
+    if (!this.wsManager) {
       return false;
     }
 
-    const audioStreamEndMessage = {
-      realtime_input: {
-        audio_stream_end: true
-      }
-    };
-
-    try {
-      this.wsManager.websocket.send(JSON.stringify(audioStreamEndMessage));
+    const sent = this.wsManager.sendAudioStreamEnd();
+    if (sent) {
       console.log('📤 Sent audio_stream_end signal');
-      return true;
-    } catch (error) {
-      console.error('Error sending audio_stream_end:', error);
-      // Mark as disconnected if there's an error
-      if (error instanceof Error && error.message.includes('WebSocket')) {
-        this.isConnected = false;
-      }
-      return false;
     }
+    return sent;
   }
 
   /**
    * Send tool response
    */
   sendToolResponse(responses: any[]): boolean {
-    if (!this.isConnected || !this.wsManager?.websocket || this.wsManager.websocket.readyState !== WebSocket.OPEN) {
+    if (!this.wsManager) {
       console.error('WebSocket not ready for tool response');
       return false;
     }
 
-    // Wrap responses in the correct message format (matching working version)
-    const toolResponseMessage = {
-      tool_response: {
-        function_responses: responses.map(r => ({
-          id: r.id,
-          name: r.name,
-          response: r.response
-        }))
-      }
-    };
+    const formatted = responses.map(r => ({
+      id: r.id,
+      name: r.name,
+      response: r.response
+    }));
 
-    try {
-      console.log('🔧 Sending tool responses:', JSON.stringify(toolResponseMessage, null, 2));
-      this.wsManager.websocket.send(JSON.stringify(toolResponseMessage));
-      console.log('✅ Tool response sent, waiting for Gemini to process and respond...');
-      return true;
-    } catch (error) {
-      console.error('Error sending tool response:', error);
-      return false;
-    }
+    return this.wsManager.sendToolResponse(formatted);
   }
 
   /**

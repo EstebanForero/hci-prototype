@@ -29,6 +29,10 @@ export interface GeminiConnectionConfig {
   debugLogsEnabled?: boolean;
   systemInstruction?: string;
   functionDeclarations?: any[];
+  generationConfig?: any;
+  realtimeInputConfig?: any;
+  outputAudioTranscription?: boolean;
+  inputAudioTranscription?: boolean;
 }
 
 export class GeminiWebSocketManager {
@@ -82,19 +86,22 @@ export class GeminiWebSocketManager {
   private createSetupMessage(): GeminiSetupMessage {
     const { model, voiceName, systemInstruction, functionDeclarations } = this.config;
 
-    return {
+    const generationConfig = {
+      response_modalities: ['AUDIO'],
+      speech_config: {
+        voice_config: {
+          prebuilt_voice_config: {
+            voice_name: voiceName || 'Kore'
+          }
+        }
+      },
+      ...(this.config.generationConfig || {})
+    };
+
+    const setup: any = {
       setup: {
         model: model || 'models/gemini-2.5-flash-native-audio-preview-09-2025',
-        generation_config: {
-          response_modalities: ['AUDIO'],
-          speech_config: {
-            voice_config: {
-              prebuilt_voice_config: {
-                voice_name: voiceName || 'Kore'
-              }
-            }
-          }
-        },
+        generation_config: generationConfig,
         system_instruction: {
           parts: [{
             text: systemInstruction || 'You are a helpful AI assistant.'
@@ -105,6 +112,20 @@ export class GeminiWebSocketManager {
         }]
       }
     };
+
+    if (this.config.realtimeInputConfig) {
+      setup.setup.realtime_input_config = this.config.realtimeInputConfig;
+    }
+
+    if (this.config.outputAudioTranscription) {
+      setup.setup.output_audio_transcription = {};
+    }
+
+    if (this.config.inputAudioTranscription) {
+      setup.setup.input_audio_transcription = {};
+    }
+
+    return setup;
   }
 
   private handleOpen = (): void => {
