@@ -107,6 +107,7 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
   const connectionManagerRef = useRef<GeminiConnectionManager | OpenAIConnectionManager | OpenAIWebRTCConnectionManager | null>(null);
   const audioServiceRef = useRef<GeminiAudioService | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const streamingAssistantRef = useRef(false);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -120,11 +121,15 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       timestamp: new Date(),
       type
     }]);
+    if (type === 'user') {
+      streamingAssistantRef.current = false;
+    }
   }, []);
 
   // Clear responses
   const clearResponses = useCallback(() => {
     setResponses([]);
+    streamingAssistantRef.current = false;
   }, []);
 
   // Clear transcript
@@ -164,7 +169,23 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       },
       onMessage: (message: any) => {
         if (message.text) {
-          addResponse(message.text, message.type || 'assistant');
+          setResponses(prev => {
+            if (streamingAssistantRef.current && prev.length > 0 && prev[prev.length - 1]?.type === 'assistant') {
+              const updated = [...prev];
+              updated[updated.length - 1] = {
+                ...updated[updated.length - 1],
+                text: `${updated[updated.length - 1].text} ${message.text}`.replace(/\s+/g, ' ').trim()
+              };
+              return updated;
+            }
+
+            streamingAssistantRef.current = true;
+            return [...prev, {
+              text: message.text,
+              timestamp: new Date(),
+              type: 'assistant'
+            }];
+          });
         }
       },
       onTranscription: (text: string) => {
@@ -200,6 +221,7 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
       },
       onTurnComplete: () => {
         console.log('🔄 Turn complete - stopping speech and clearing audio buffer');
+        streamingAssistantRef.current = false;
         if (voiceProvider !== 'openai-webrtc') {
           connectionManagerRef.current?.clearAudioBuffer();
         }
@@ -223,16 +245,21 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
     }
 
     let apiKey: string | undefined;
+    const storedGeminiKey = typeof window !== 'undefined' ? localStorage.getItem('VITE_GEMINI_API_KEY') : null;
+    const storedOpenAIKey = typeof window !== 'undefined'
+      ? (localStorage.getItem('VITE_OPENAI_REALTIME_KEY') || localStorage.getItem('VITE_OPENAI_API_KEY'))
+      : null;
+
     if (voiceProvider === 'gemini') {
-      apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      apiKey = storedGeminiKey || import.meta.env.VITE_GEMINI_API_KEY;
       if (!apiKey || apiKey === 'your_gemini_api_key_here') {
-        setError('Please add your Gemini API key to .env file');
+        setError('Please add your Gemini API key via the Developer Settings modal or .env file');
         return;
       }
     } else {
-      apiKey = import.meta.env.VITE_OPENAI_REALTIME_KEY || import.meta.env.VITE_OPENAI_API_KEY;
+      apiKey = storedOpenAIKey || import.meta.env.VITE_OPENAI_REALTIME_KEY || import.meta.env.VITE_OPENAI_API_KEY;
       if (!apiKey) {
-        setError('Please add your OpenAI realtime API key to .env file');
+        setError('Please add your OpenAI realtime API key via the Developer Settings modal or .env file');
         return;
       }
     }
@@ -360,6 +387,7 @@ const GeminiLive: React.FC<GeminiLiveProps> = ({
     setIsListening(provider === 'openai-webrtc');
     setVoiceProvider(provider);
     setError(null);
+    streamingAssistantRef.current = false;
   }, [voiceProvider, isListening, handleVoiceInput]);
 
   const handleTextInputSubmit = useCallback((text: string) => {
